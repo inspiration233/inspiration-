@@ -25,4 +25,14 @@ python 测试集/生成测试集.py --skip-large    # 只重建小规模夹具
 - 界面：Electron + HTML/CSS/JS
 - 打包：PyInstaller + electron-builder，GitHub Actions 双平台产出，内部渠道分发
 
-> 仓库结构随开发推进更新（M1 引擎 → M2 壳与界面 → M3 CI）。
+### 引擎（M1 已交付）
+
+```bash
+pip install -r requirements.txt
+python -m pytest tests/ -q          # 31 项测试（单元 + 场景A-E端到端）全绿
+python -m engine.sidecar            # 启动 JSON 行协议引擎（壳的调用入口）
+```
+
+- 交付内容：四种合并模式 / 表头智能识别（探测·多行表头·汇总行剔除）/ 严格·宽容对齐（含复合键末段回退）/ 流式写出（分页·大数字转文本防损·数字格式保留·保留样式模式）/ 结果报告与脱敏日志 / sidecar 协议（scan/merge/cancel）。
+- 性能实测（开发机）：3×10 万行合并 ~61s（指标 60s，openpyxl 解析为瓶颈；进一步优化路径：python-calamine 读通道，代价是失去单元格格式读取，待权衡）。
+- 已知边界：`.xls` 在保留样式模式下样式还原能力有限（数据为准）；无表头且无数据的空列会保留（数据安全优先）。
