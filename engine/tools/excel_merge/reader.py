@@ -184,8 +184,6 @@ class _XlsxReader:
             st.warnings.append(warn)
         if det.header_row == 0:
             st.warnings.append("未探测到表头，已按第 1 行处理（可手动指定）")
-        if det.low_confidence:
-            st.warnings.append("两个候选表头行得分接近，请人工核对")
         return st
 
     def iter_data_rows(self, source):
