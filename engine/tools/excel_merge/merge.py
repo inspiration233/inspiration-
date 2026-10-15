@@ -173,13 +173,26 @@ def merge(paths, out_path, options=None, progress=None, cancel=None):
             groups = [usable]
 
         # 3) 逐组合并写出
-        for group in groups:
-            template_index = min(options.template_index, len(group) - 1)
-            try:
+        try:
+            for group in groups:
+                template_index = min(options.template_index, len(group) - 1)
                 _merge_group(book, group, options, template_index,
                              report, progress, cancel)
-            except AlignError as e:
-                raise
+        except Cancelled:
+            try:
+                book.save()                     # 落盘取消前已完成的部分
+            except Exception:
+                pass
+            report["cancelled"] = True
+            report["warnings"].append("已取消：输出文件为取消前已完成的部分")
+            totals["big_numbers_converted"] = book.big_numbers_converted
+            report["output"] = str(out_path)
+            report["duration_sec"] = round(time.monotonic() - t0, 2)
+            report = _finalize(report)
+            _write_log(out_path, report)
+            return report
+        except AlignError:
+            raise
         book.save()
         totals["big_numbers_converted"] = book.big_numbers_converted
     finally:

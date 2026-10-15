@@ -153,7 +153,7 @@ class _XlsxReader:
     def sheets(self):
         return [(ws.title, ws.sheet_state == "visible") for ws in self.wb.worksheets]
 
-    def build_structure(self, sheet_name):
+    def build_structure(self, sheet_name, force=0):
         ws = self.wb[sheet_name]
         window = []
         for row in ws.iter_rows(min_row=1, max_row=XLSX_WINDOW, values_only=True):
@@ -164,9 +164,13 @@ class _XlsxReader:
             return SheetStructure(sheet_name, 0, 0, [], [], empty=True)
 
         ranges = xlsx_merge_ranges(self.path, sheet_name)
-        det = recognize.detect_header_row(window)
-        header_row = det.header_row or 1
-        header_row = recognize.extend_header_up(window, header_row, ranges)
+        if force > 0:
+            det = recognize.detect_header_row(window)
+            header_row = force
+        else:
+            det = recognize.detect_header_row(window)
+            header_row = det.header_row or 1
+            header_row = recognize.extend_header_up(window, header_row, ranges)
         height = recognize.detect_region_height(window, header_row, ranges)
         keys = recognize.flatten_keys(window, header_row, height, ranges)
         st = SheetStructure(
@@ -242,7 +246,7 @@ class _XlsReader:
             return bool(cell.value)
         return None
 
-    def build_structure(self, sheet_name):
+    def build_structure(self, sheet_name, force=0):
         sheet = self.book.sheet_by_name(sheet_name)
         if sheet.nrows == 0:
             return SheetStructure(sheet_name, 0, 0, [], [], empty=True)
@@ -251,8 +255,8 @@ class _XlsReader:
         ranges = [MergeRange(c1 + 1, r1 + 1, c2 + 1, r2 + 1)
                   for r1, r2, c1, c2 in (sheet.merged_cells if self._has_merge else [])]
         det = recognize.detect_header_row(window)
-        header_row = det.header_row or 1
-        header_row = recognize.extend_header_up(window, header_row, ranges)
+        header_row = force if force > 0 else recognize.extend_header_up(
+            window, det.header_row or 1, ranges)
         height = recognize.detect_region_height(window, header_row, ranges)
         keys = recognize.flatten_keys(window, header_row, height, ranges)
         return SheetStructure(
@@ -319,12 +323,12 @@ class _CsvReader:
     def _reopen(self):
         return csv.reader(self.path.open("r", encoding=self.encoding, newline=""))
 
-    def build_structure(self, sheet_name):
+    def build_structure(self, sheet_name, force=0):
         window = [r for r in self.window]  # 前导空行参与窗口但计分为 0
         if not any(recognize._row_nonempty(r) for r in window):
             return SheetStructure(sheet_name, 0, 0, [], [], empty=True)
         det = recognize.detect_header_row(window)
-        header_row = det.header_row or 1
+        header_row = force if force > 0 else (det.header_row or 1)
         keys = recognize.flatten_keys(window, header_row, 1, [])
         return SheetStructure(
             sheet_name, header_row, 1, keys, [],
@@ -360,7 +364,7 @@ def open_reader(path):
     return _CsvReader(path)
 
 
-def list_tables(path, include_hidden=False):
+def list_tables(path, include_hidden=False, force_header_row=0):
     """打开文件 → [(TableSource, 已跳过原因?)]。损坏文件抛 FileError 由上层记报告。"""
     reader = open_reader(path)
     out = []
@@ -368,7 +372,7 @@ def list_tables(path, include_hidden=False):
         if not visible and not include_hidden:
             out.append((None, f"隐藏 Sheet「{name}」已跳过"))
             continue
-        st = reader.build_structure(name)
+        st = reader.build_structure(name, force_header_row)
         src = TableSource(Path(path), name, display_table(Path(path), name),
                           st, reader)
         out.append((src, None))

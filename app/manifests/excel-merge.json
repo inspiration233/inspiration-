@@ -1,0 +1,10 @@
+{
+  "id": "excel-merge",
+  "name": "Excel 合并",
+  "icon": "▦",
+  "description": "多文件汇总 / 多 Sheet 合并 / 表头智能识别",
+  "view": "tools/excel-merge/index.html",
+  "script": "tools/excel-merge/tool.js",
+  "css": "tools/excel-merge/tool.css",
+  "engine": "excel_merge"
+}

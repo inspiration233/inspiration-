@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:;">
+  <title>工具箱</title>
+  <link rel="stylesheet" href="../shared/design.css">
+  <link rel="stylesheet" href="shell.css">
+</head>
+<body>
+  <div class="aurora" aria-hidden="true"><span></span><span></span><span></span></div>
+
+  <!-- 自绘玻璃标题栏 -->
+  <header class="titlebar glass-1" id="titlebar">
+    <span class="app-name">⬡ 工具箱</span>
+    <span class="actions">
+      <button class="ghost" id="btn-settings" title="设置中心">设置</button>
+      <button class="ghost" id="btn-about" title="关于">关于</button>
+      <span class="dot" id="win-min" title="最小化"></span>
+      <span class="dot" id="win-max" title="最大化"></span>
+      <span class="dot close" id="win-close" title="关闭"></span>
+    </span>
+  </header>
+
+  <!-- 路由容器 -->
+  <main id="stage"></main>
+
+  <!-- 全局浮层：设置中心 / 关于 -->
+  <div class="overlay hidden" id="overlay">
+    <div class="panel glass-2 anim-rise" id="overlay-panel"></div>
+  </div>
+
+  <!-- toast 堆栈 -->
+  <div class="toasts" id="toasts"></div>
+
+  <script src="shell.js"></script>
+</body>
+</html>

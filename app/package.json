@@ -1,0 +1,14 @@
+{
+  "name": "team-toolbox",
+  "productName": "工具箱",
+  "version": "0.1.0",
+  "description": "团队本地工具箱（第一个工具：Excel 合并）",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "smoke": "electron . --smoke"
+  },
+  "devDependencies": {
+    "electron": "^33.2.0"
+  }
+}

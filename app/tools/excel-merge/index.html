@@ -1,0 +1,125 @@
+<!-- Excel 合并 · 工具视图（由壳注入） -->
+<div class="tool">
+  <div class="tool-head">
+    <button class="ghost" id="btn-back">← 返回</button>
+    <h1>Excel 合并</h1>
+  </div>
+
+  <!-- 文件区 -->
+  <section class="pane files-pane">
+    <div class="dropzone glass-2" id="dropzone">
+      <div class="dz-idle" id="dz-idle">
+        <div class="dz-arrow">⬇</div>
+        <div>拖入 Excel 文件或文件夹</div>
+        <div class="dz-btns">
+          <button id="btn-add-files">选择文件</button>
+          <button id="btn-add-folder">选择文件夹</button>
+        </div>
+        <div class="dz-hint">支持 .xlsx / .xls / .csv · GBK 自动识别</div>
+      </div>
+      <div class="dz-thin hidden" id="dz-thin">拖入继续添加</div>
+    </div>
+
+    <div class="file-list hidden" id="file-list-wrap">
+      <div class="list-head">
+        <span>文件列表（<b id="file-count">0</b>）</span>
+        <span>
+          <button class="ghost" id="btn-add-more">继续添加</button>
+          <button class="ghost danger" id="btn-clear">清空</button>
+        </span>
+      </div>
+      <div class="rows" id="file-rows"></div>
+    </div>
+  </section>
+
+  <!-- 合并设置（抽屉） -->
+  <section class="pane settings-pane hidden" id="settings">
+    <div class="settings-head" id="settings-head">合并设置 <span class="caret">▾</span></div>
+    <div class="settings-body hidden" id="settings-body">
+      <div class="set-group">
+        <div class="set-label">合并模式</div>
+        <div class="radio-cards" id="opt-mode">
+          <div class="radio-card sel" data-v="single"><div class="t">一张总表</div><div class="d">多文件按行追加</div></div>
+          <div class="radio-card" data-v="workbook"><div class="t">一个工作簿</div><div class="d">每表独立成页</div></div>
+          <div class="radio-card" data-v="sheets"><div class="t">文件内汇总</div><div class="d">多Sheet→一张表</div></div>
+          <div class="radio-card" data-v="group"><div class="t">同名Sheet分组</div><div class="d">按Sheet名合并</div></div>
+        </div>
+      </div>
+      <div class="set-group">
+        <div class="set-label">表头对齐</div>
+        <div class="radio-cards" id="opt-align">
+          <div class="radio-card sel" data-v="loose"><div class="t">宽容</div><div class="d">多收缺空（推荐）</div></div>
+          <div class="radio-card" data-v="strict"><div class="t">严格</div><div class="d">不一致即报错</div></div>
+        </div>
+      </div>
+      <div class="set-group">
+        <div class="set-label">输出样式</div>
+        <div class="radio-cards" id="opt-style">
+          <div class="radio-card sel" data-v="unified"><div class="t">统一样式</div><div class="d">干净快速</div></div>
+          <div class="radio-card" data-v="preserve"><div class="t">保留原样式</div><div class="d">大数据量较慢</div></div>
+        </div>
+      </div>
+      <div class="set-group two">
+        <div>
+          <div class="set-label">表头模板文件</div>
+          <select id="opt-template"></select>
+        </div>
+        <div>
+          <div class="set-label">表头行</div>
+          <div class="inline">
+            <select id="opt-header-auto">
+              <option value="0">自动探测</option>
+              <option value="1">手动指定</option>
+            </select>
+            <input type="number" id="opt-header-row" min="1" max="50" value="1" class="hidden">
+          </div>
+        </div>
+      </div>
+      <div class="set-group toggles">
+        <label><span class="switch on" id="opt-summary"></span>剔除合计/小计行</label>
+        <div class="kw-edit">关键词 <span class="chips" id="opt-keywords"></span>
+          <input type="text" id="kw-input" placeholder="回车添加" style="width:90px"></div>
+        <label><span class="switch" id="opt-source"></span>追加"来源"标记列</label>
+        <label><span class="switch" id="opt-hidden"></span>包含隐藏 Sheet</label>
+        <label><span class="switch" id="opt-title"></span>以第一个文件的标题作总表标题</label>
+      </div>
+    </div>
+  </section>
+
+  <!-- 操作条 -->
+  <div class="action-bar">
+    <button class="ghost" id="btn-settings-toggle">合并设置 ▾</button>
+    <button class="primary" id="btn-merge" disabled>合并 →</button>
+  </div>
+
+  <!-- 进行中 -->
+  <section class="pane progress-pane hidden" id="progress-pane">
+    <div class="prog-card glass-2 anim-rise">
+      <div class="prog-title">正在合并 <b id="prog-file">-</b></div>
+      <div class="prog-sub"><span id="prog-count">0 / 0</span> · 已写入 <span id="prog-rows">0</span> 行</div>
+      <div class="bar"><div class="bar-fill" id="prog-bar"></div></div>
+      <div class="cancel-zone hidden" id="cancel-zone">
+        <span>确认取消？输出将保留已完成部分</span>
+        <button id="btn-cancel-yes" class="danger">确认取消</button>
+        <button id="btn-cancel-no">继续</button>
+      </div>
+      <button id="btn-cancel" class="ghost">取消</button>
+    </div>
+  </section>
+
+  <!-- 结算 -->
+  <section class="pane done-pane hidden" id="done-pane">
+    <div class="done-card glass-2 anim-rise">
+      <div class="done-check" id="done-icon">✓</div>
+      <div class="done-title" id="done-title">合并完成</div>
+      <div class="done-stats" id="done-stats"></div>
+      <div class="done-out" id="done-out"></div>
+      <div class="done-btns">
+        <button class="primary" id="btn-open-folder">打开所在文件夹</button>
+        <button id="btn-report">查看完整报告</button>
+        <button id="btn-again">继续合并</button>
+      </div>
+      <div class="report hidden" id="report-detail"></div>
+    </div>
+  </section>
+</div>
