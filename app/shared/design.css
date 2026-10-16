@@ -232,14 +232,16 @@ select:focus, input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px r
 
 /* 列表行进出场 */
 .row-item { overflow: hidden; animation: row-in 0.24s var(--spring) both; }
+/* 注意: 入场动画只用 opacity/transform —— 动画 max-height 会把内容盒
+   截断在固定高度, 导致抽屉/详情超高内容被后续元素遮挡(实测教训) */
 @keyframes row-in {
-  from { opacity: 0; max-height: 0; transform: translateY(-4px); }
-  to   { opacity: 1; max-height: 200px; transform: translateY(0); }
+  from { opacity: 0; transform: translateY(-6px); }
+  to   { opacity: 1; transform: translateY(0); }
 }
-.row-item.leaving { animation: row-out 0.2s var(--ease) both; }
+.row-item.leaving { animation: row-out 0.18s var(--ease) both; }
 @keyframes row-out {
-  from { opacity: 1; max-height: 200px; }
-  to   { opacity: 0; max-height: 0; }
+  from { opacity: 1; }
+  to   { opacity: 0; transform: translateY(4px); }
 }
 
 /* ---------------- 减少动效 / 材质降级（§7） ---------------- */

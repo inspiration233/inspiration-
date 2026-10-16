@@ -107,6 +107,7 @@ function createWindow() {
     });
     const p1 = JSON.stringify(path.join(ROOT, '测试集', '场景E_表头智能识别', '报表_甲.xlsx'));
     const p2 = JSON.stringify(path.join(ROOT, '测试集', '场景E_表头智能识别', '报表_丙.csv'));
+    const pDir = JSON.stringify(path.join(ROOT, '测试集', '场景A_多文件纵向合并'));
     const out = JSON.stringify(path.join(ROOT, '_uitest_out.xlsx'));
     const shot = (name) => win.webContents.capturePage().then((img) => {
       fs.writeFileSync(path.join(ROOT, name), img.toPNG());
@@ -124,7 +125,7 @@ function createWindow() {
           if (dn !== 'none') return 'done-pane-visible(display=' + dn + ')';
           const pp = getComputedStyle(document.querySelector('#progress-pane')).display;
           if (pp !== 'none') return 'progress-pane-visible(display=' + pp + ')';
-          T.addPaths([${p1}, ${p2}]);
+          T.addPaths({ files: [${p1}, ${p2}] });
           for (let i = 0; i < 20; i++) {           // 等体检回填
             await sleep(300);
             const metas = [...document.querySelectorAll('.file-row .meta')];
@@ -135,12 +136,24 @@ function createWindow() {
           const okMeta = document.querySelector('.file-row .meta.ok');
           if (!okMeta) return 'scan-not-applied';
           if (!okMeta.textContent.includes('表头第3行')) return 'meta=' + okMeta.textContent;
-          return 'PHASE1-OK';
+          // 文件夹展开（"选择文件夹"按钮同路径）：场景A 目录应扫出 6 个表格文件
+          const exp = await window.toolbox.expandPaths([${pDir}]);
+          if (exp.files.length !== 6) return 'folder-expand=' + exp.files.length;
+          // 抽屉展开：无遮挡（action-bar 不得压住抽屉内容）、无截断
+          document.querySelector('#settings-head').click();
+          await sleep(500);
+          const sBody = document.querySelector('#settings-body');
+          const aBar = document.querySelector('.action-bar');
+          if (aBar.getBoundingClientRect().top < sBody.getBoundingClientRect().bottom - 2) return 'drawer-overlap';
+          if (sBody.clientHeight < sBody.scrollHeight - 2) return 'drawer-clipped';
+          return 'PHASE1-OK';  // 抽屉保持展开，供截屏核验
         })()`);
         if (r1 !== 'PHASE1-OK') { console.log('UITEST-FAIL ' + r1); app.exit(1); return; }
         await shot('_uitest_1_filelist.png');
         const r2 = await win.webContents.executeJavaScript(`(async () => {
           const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+          document.querySelector('#settings-head')?.click();     // 收回抽屉
+          await sleep(300);
           const ok = await window.__emTest.startMerge(${out});   // 真实合并
           if (!ok) return 'merge-failed';
           for (let i = 0; i < 60; i++) {
@@ -201,6 +214,30 @@ function createWindow() {
 }
 
 // ---------------------------------------------------------------- IPC
+
+// 路径展开：目录递归扫描 + 扩展名过滤 + 去重（按钮选择与拖拽统一走这里）
+const TABLE_EXTS = new Set(['.xlsx', '.xls', '.csv']);
+ipcMain.handle('paths:expand', async (_e, paths) => {
+  const files = [];
+  let skipped = 0;
+  const seen = new Set();
+  const visit = (p) => {
+    let st;
+    try { st = fs.statSync(p); } catch { skipped += 1; return; }
+    if (st.isDirectory()) {
+      let names = [];
+      try { names = fs.readdirSync(p); } catch { return; }
+      names.forEach((n) => visit(path.join(p, n)));
+    } else if (TABLE_EXTS.has(path.extname(p).toLowerCase())) {
+      const key = path.resolve(p).toLowerCase();
+      if (!seen.has(key)) { seen.add(key); files.push(p); }
+    } else {
+      skipped += 1;
+    }
+  };
+  (paths || []).forEach(visit);
+  return { files, skipped };
+});
 
 ipcMain.handle('dlg:files', async () => {
   const r = await dialog.showOpenDialog(win, {

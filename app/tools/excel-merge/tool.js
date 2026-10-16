@@ -41,24 +41,34 @@ window.toolMount = (root, ctx) => {
     return files;
   };
 
+  // 统一入口：主进程做目录递归/扩展名过滤/去重（按钮与拖拽同一条路，文件夹按钮由此修复）
+  const addFromPaths = async (rawPaths) => {
+    if (!rawPaths || !rawPaths.length) return;
+    try {
+      addPaths(await toolbox.expandPaths(rawPaths));
+    } catch (e) {
+      tbToast(`添加失败：${e}`, 'error');
+    }
+  };
+
   root.addEventListener('dragover', (e) => { e.preventDefault(); dropzone.classList.add('dragover'); });
   root.addEventListener('dragleave', () => dropzone.classList.remove('dragover'));
   root.addEventListener('drop', async (e) => {
     e.preventDefault();
     dropzone.classList.remove('dragover');
-    const items = [...(e.dataTransfer.items || [])];
-    let paths = [];
-    if (items.length && items[0].webkitGetAsEntry) {
-      const files = await collectEntries(items);
-      paths = files.map((f) => toolbox.pathForFile(f));
-    } else {
-      paths = [...e.dataTransfer.files].map((f) => toolbox.pathForFile(f));
+    let paths = [...e.dataTransfer.files].map((f) => toolbox.pathForFile(f));
+    if (!paths.length) {                      // 少数场景 files 为空但有 entries
+      const items = [...(e.dataTransfer.items || [])];
+      if (items.length && items[0].webkitGetAsEntry) {
+        const files = await collectEntries(items);
+        paths = files.map((f) => toolbox.pathForFile(f));
+      }
     }
-    addPaths(paths);
+    addFromPaths(paths);
   });
 
-  $('btn-add-files').onclick = async () => addPaths(await toolbox.selectFiles());
-  $('btn-add-folder').onclick = async () => addPaths(await toolbox.selectFolder());
+  $('btn-add-files').onclick = async () => addFromPaths(await toolbox.selectFiles());
+  $('btn-add-folder').onclick = async () => addFromPaths(await toolbox.selectFolder());
   $('btn-add-more').onclick = () => $('btn-add-files').click();
 
   // ---------------- 文件列表 ----------------
@@ -66,17 +76,20 @@ window.toolMount = (root, ctx) => {
     .map((d) => (dets.length > 1 ? `${d.sheet}: ` : '') + `表头第${d.header_row}行·${d.columns.length}列`)
     .join('、');
 
-  function addPaths(paths) {
-    const okExt = /\.(xlsx|xls|csv)$/i;
-    let added = 0, skipped = 0;
-    for (const p of paths) {
-      if (!okExt.test(p)) { skipped++; continue; }
-      if (state.files.some((f) => f.path === p)) { skipped++; continue; }
+  function addPaths({ files, skipped = 0 }) {
+    let added = 0;
+    let dup = 0;
+    for (const p of files) {
+      if (state.files.some((f) => f.path === p)) { dup++; continue; }
       state.files.push({ path: p, name: p.split(/[\\/]/).pop(), status: 'pending' });
       added++;
     }
     if (added) { refreshList(); scheduleScan(); }
-    if (skipped) tbToast(`已跳过 ${skipped} 个（不支持或重复）`);
+    const skippedTotal = skipped + dup;
+    if (added || skippedTotal) {
+      tbToast(`已添加 ${added} 个文件` +
+        (skippedTotal ? `，跳过 ${skippedTotal} 个（不支持或重复）` : ''));
+    }
   }
 
   function refreshList() {

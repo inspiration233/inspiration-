@@ -5,6 +5,7 @@ contextBridge.exposeInMainWorld('toolbox', {
   // 文件与路径
   selectFiles: () => ipcRenderer.invoke('dlg:files'),
   selectFolder: () => ipcRenderer.invoke('dlg:folder'),
+  expandPaths: (paths) => ipcRenderer.invoke('paths:expand', paths),
   saveDialog: (defaultName) => ipcRenderer.invoke('dlg:save', defaultName),
   showInFolder: (p) => ipcRenderer.invoke('open:show', p),
   pathForFile: (file) => webUtils.getPathForFile(file),   // Electron 33: File.path 已移除
