@@ -23,6 +23,17 @@
   matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyTheme);
   if (reduceMotion) document.documentElement.classList.add('reduce-motion');
 
+  // 拉伸期间临时降级材质：暂停动画/隐藏极光/摘掉玻璃模糊，
+  // 让合成器跟上 DWM 的窗口尺寸变化（消除掉帧露出的黑闪）
+  let resizeTimer = null;
+  window.addEventListener('resize', () => {
+    document.documentElement.classList.add('resizing');
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => {
+      document.documentElement.classList.remove('resizing');
+    }, 160);
+  }, { passive: true });
+
   // ---------------- 窗口控制 ----------------
   document.getElementById('win-min').onclick = () => toolbox.winControl('min');
   document.getElementById('win-max').onclick = () => toolbox.winControl('max');
@@ -155,4 +166,12 @@
 
   // ---------------- 启动 ----------------
   loadManifests().then(renderHome);
+
+  // GPU 软件渲染检测 → 自动材质降级（UI设计说明 §7：停用模糊与极光漂移）
+  toolbox.info().then((info) => {
+    if (info.gpuCompositing === 'disabled_software') {
+      document.documentElement.classList.add('reduce-motion');
+      tbToast('检测到软件渲染，已自动降级动效与材质以保证流畅', 'warn');
+    }
+  });
 })();

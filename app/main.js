@@ -289,12 +289,17 @@ ipcMain.on('win:ctl', (_e, action) => {
   else if (action === 'close') win.close();
 });
 
-ipcMain.handle('app:info', () => ({
-  appVersion: app.getVersion(),
-  platform: process.platform,
-  electron: process.versions.electron,
-  python: PYTHON,
-}));
+ipcMain.handle('app:info', () => {
+  let gpu = 'unknown';
+  try { gpu = app.getGPUFeatureStatus().gpu_compositing; } catch { /* 忽略 */ }
+  return {
+    appVersion: app.getVersion(),
+    platform: process.platform,
+    electron: process.versions.electron,
+    python: PYTHON,
+    gpuCompositing: gpu,        // 'disabled_software' = 软件渲染, 需自动材质降级
+  };
+});
 
 // ---------------------------------------------------------------- 生命周期
 
