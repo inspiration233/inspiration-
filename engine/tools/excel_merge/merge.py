@@ -232,9 +232,8 @@ def merge(paths, out_path, options=None, progress=None, cancel=None):
                 return options.merge_shape
             if len(b) == 1:
                 return "append"                    # 单源组: 完整还原(含前置区)
-            # 多源: 所有源都有复杂前置区(≥2行)才拼接保形; 明细类(前置区不齐/无)保持汇总
-            if all(len(s.structure.pre_rows) >= 2 for s in b):
-                return "append"
+            # 多源: 一律汇总(一个表头+数据堆叠+前置区逐行共性检测);
+            # 表头相同还逐张重复属冗余——拼接式仅在用户明确选择时使用
             return "stack"
 
         groups = [(n, b, _shape_of(b)) for (n, b) in groups]

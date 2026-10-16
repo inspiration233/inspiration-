@@ -209,6 +209,25 @@ class FidelityBook:
 
 # ================================================================ 组合并(保真)
 
+def _extract_meta(pre_rows):
+    """从前置区行提取 标签：值 对（"制表人：" 后跟值格, 或 "标签：值" 同格）。"""
+    out = {}
+    for row in pre_rows:
+        for i, v in enumerate(row):
+            if not isinstance(v, str):
+                continue
+            m = re.match(r"^([^：:]{1,12})[：:]\s*$", v.strip())
+            if m:
+                val = next((x for x in row[i + 1:] if x not in (None, "")), None)
+                if val is not None:
+                    out[m.group(1)] = str(val)
+                continue
+            m2 = re.match(r"^([^：:]{1,10})[：:]\s*(\S+.*)$", v.strip())
+            if m2 and len(m2.group(2)) <= 30:
+                out[m2.group(1)] = m2.group(2)
+    return out
+
+
 def merge_group_fidelity(book, group, options, template_index, report,
                          progress=None, cancel=None, base_name="总表",
                          shape="stack"):
@@ -228,6 +247,28 @@ def merge_group_fidelity(book, group, options, template_index, report,
     t_content = contents[template_index if options.mode != "workbook" else 0]
 
     extra_texts = [k for k in out_keys if k not in tpos]
+
+    # 汇总式前置区逐行共性检测: 前缀全同行保留一份; 差异区的 标签:值 → 元数据列
+    meta_labels, meta_vals = [], []
+    common_pre_n = 0
+    if shape == "stack" and len(src_list) > 1:
+        pres = [s.structure.pre_rows for s in src_list]
+        for i in range(min(len(p) for p in pres)):
+            if all(p[i] == pres[0][i] for p in pres) and any(
+                    v not in (None, "") for v in pres[0][i]):
+                common_pre_n = i + 1
+            else:
+                break
+        dicts = [_extract_meta(p[common_pre_n:]) for p in pres]
+        cand = {}
+        for d in dicts:
+            for k, v in d.items():
+                cand.setdefault(k, []).append(v)
+        meta_labels = [k for k, vals in cand.items()
+                       if len(vals) >= 2 and len(set(map(str, vals))) > 1]
+        meta_vals = dicts
+    meta_col0 = len(tkeys) + len(extra_texts)
+    extra_texts = extra_texts + meta_labels
     source_label = "来源" if options.source_column else None
     title_row = st.title if (options.title_as_header and st.title) else None
     base_height = st.height or 1
@@ -243,18 +284,19 @@ def merge_group_fidelity(book, group, options, template_index, report,
     ws = None
     page_no = 0
 
-    def _write_pre(ws, start_row, cont, sst_src):
-        """写出前置区(值+样式+合并平移), 返回占用行数。"""
+    def _write_pre(ws, start_row, cont, sst_src, limit=None):
+        """写出前置区(值+样式+合并平移), limit=只写前N行(汇总式共性前缀), 返回占用行数。"""
         if sst_src.header_row <= 1:
             return 0
+        n_rows = limit if limit is not None else sst_src.header_row - 1
         if not cont.full:
-            for r_i, prow in enumerate(sst_src.pre_rows):
+            for r_i, prow in enumerate(sst_src.pre_rows[:n_rows]):
                 for c_i, v in enumerate(prow, start=1):
                     if v is not None:
                         ws.cell(row=start_row + r_i, column=c_i, value=v)
-            return len(sst_src.pre_rows)
+            return min(n_rows, len(sst_src.pre_rows))
         rows = [[c for c in r] for r in cont.sheet().iter_rows(
-            min_row=1, max_row=sst_src.header_row - 1)]
+            min_row=1, max_row=sst_src.header_row - 1)][:n_rows]
         for r_idx, r in enumerate(rows, start=1):
             for c_idx, cell in enumerate(r, start=1):
                 out = ws.cell(row=start_row + r_idx - 1, column=c_idx)
@@ -266,7 +308,7 @@ def merge_group_fidelity(book, group, options, template_index, report,
                 if cell.comment:
                     out.comment = Comment(cell.comment.text, cell.comment.author)
         for mg in getattr(sst_src, "all_merges", []):
-            if mg.max_row < sst_src.header_row:
+            if mg.max_row < sst_src.header_row and mg.max_row <= n_rows:
                 try:
                     ws.merge_cells(start_column=mg.min_col,
                                    start_row=mg.min_row + start_row - 1,
@@ -311,7 +353,7 @@ def merge_group_fidelity(book, group, options, template_index, report,
         page_no += 1
         r0 = 0
         if write_pre_from is not None and st.header_row > 1:
-            r0 = _write_pre(ws, 1, write_pre_from, st)   # 前置区已含标题行
+            r0 = _write_pre(ws, 1, write_pre_from, st, limit=pre_limit)
         elif title_row:
             ws.cell(row=1, column=1, value=title_row)
             if total_width > 1:
@@ -377,12 +419,13 @@ def merge_group_fidelity(book, group, options, template_index, report,
             ws.column_dimensions[get_column_letter(c)].width = w
         return ws
 
-    # 汇总式: 多源且前置区逐行全同 → 保留一份(模板前置区)在表头上方
-    pre_identical = (len(src_list) > 1 and shape == "stack"
-                     and all(s.structure.pre_rows == template.structure.pre_rows
-                             for s in src_list)
-                     and bool(template.structure.pre_rows))
-    first_pre = t_content if (shape == "append" or pre_identical) else None
+    # 首页前置区: 拼接式=模板全量; 汇总式=逐行共性前缀(全同行保留一份)
+    if shape == "append":
+        first_pre, pre_limit = t_content, None
+    elif common_pre_n > 0:
+        first_pre, pre_limit = t_content, common_pre_n
+    else:
+        first_pre, pre_limit = None, 0
     ws = _new_page(write_pre_from=first_pre)
     block_base = ws.max_row                     # 前置区(如有)+表头 已占的行数
 
@@ -509,6 +552,9 @@ def merge_group_fidelity(book, group, options, template_index, report,
                 ws.cell(row=out_row, column=serial_idx + 1).value = serial_counter
             if source_label:
                 ws.cell(row=out_row, column=total_width).value = src.display
+            for j, label in enumerate(meta_labels):
+                ws.cell(row=out_row, column=meta_col0 + 1 + j,
+                        value=(meta_vals[fi] or {}).get(label))
             totals["rows_written"] = totals.get("rows_written", 0) + 1
             data_rows += 1
 
