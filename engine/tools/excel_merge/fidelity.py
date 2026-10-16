@@ -222,8 +222,8 @@ def _extract_meta(pre_rows):
                 if val is not None:
                     out[m.group(1)] = str(val)
                 continue
-            m2 = re.match(r"^([^：:]{1,10})[：:]\s*(\S+.*)$", v.strip())
-            if m2 and len(m2.group(2)) <= 30:
+            m2 = re.match(r"^(.{2,10})[：:](\S.{0,28})$", v.strip())
+            if m2 and "：" not in m2.group(2) and ":" not in m2.group(2):
                 out[m2.group(1)] = m2.group(2)
     return out
 
@@ -428,6 +428,7 @@ def merge_group_fidelity(book, group, options, template_index, report,
         first_pre, pre_limit = None, 0
     ws = _new_page(write_pre_from=first_pre)
     block_base = ws.max_row                     # 前置区(如有)+表头 已占的行数
+    hdr_start = block_base - (st.height or 1) + 1
 
     # ---------------- 数据行（两遍：先完整行映射，公式引用才可翻译） ----------------
     for fi, (src, mapping) in enumerate(zip(src_list, maps)):
@@ -491,6 +492,7 @@ def merge_group_fidelity(book, group, options, template_index, report,
             if sst.header_row > 1:
                 at += _write_pre(ws, at, cont, sst)
             _write_header_at(ws, at, src)
+            hdr_start = at
         cursor = (ws.max_row if shape == "append" else block_base) + rows_total
         for row_no, _f, _v in keep:
             if ws.max_row >= XLSX_MAX_ROWS - 2:
@@ -605,7 +607,8 @@ def merge_group_fidelity(book, group, options, template_index, report,
         if cont.full and data_rows:
             _copy_validations(book, ws, cont, col_map, flat_map, dstart, totals)
             _copy_cond_formats(ws, cont, col_map, flat_map, dstart, totals)
-            _copy_tables(book, ws, cont, col_map, flat_map, len(src_list), totals)
+            _copy_tables(book, ws, cont, col_map, flat_map, len(src_list), totals,
+                         hdr_start=hdr_start, sst=sst)
 
         if progress:
             progress(fi + 1, len(src_list), src.display, rows_total)
@@ -748,15 +751,24 @@ def _copy_cond_formats(ws, cont, col_map, row_map, dstart, totals):
                 if None in (c1, c2, r1, r2) or (r2 - r1) != (cr.max_row - cr.min_row):
                     continue
                 ws.conditional_formatting.add(
-                    CellRange(min_col=c1, min_row=r1, max_col=c2, max_row=r2), rule)
+                    f"{get_column_letter(c1)}{r1}:{get_column_letter(c2)}{r2}", rule)
                 totals["cf_kept"] = totals.get("cf_kept", 0) + 1
 
 
 # --------------------------------------------------------------- 智能表格
 
-def _copy_tables(book, ws, cont, col_map, row_map, group_size, totals):
+def _copy_tables(book, ws, cont, col_map, row_map, group_size, totals,
+                 hdr_start=None, sst=None):
     sheet = cont.sheet()
-    for name, tbl in list(getattr(sheet, "tables", {}).items()):
+    dstart = sst.header_row + sst.height if sst else 10 ** 9
+
+    def _tr(r):
+        if r < dstart and hdr_start is not None:
+            return hdr_start + (r - sst.header_row)     # 表头区行 → 输出表头坐标
+        return row_map.get(r)
+
+    for tbl in list(getattr(sheet, "tables", {}).values()):
+        name = getattr(tbl, "displayName", "表")
         if group_size > 1:
             totals["tables_downgraded"] = totals.get("tables_downgraded", 0) + 1
             continue
@@ -766,7 +778,7 @@ def _copy_tables(book, ws, cont, col_map, row_map, group_size, totals):
             continue
         c1 = col_map.get(column_index_from_string(m.group(1)))
         c2 = col_map.get(column_index_from_string(m.group(3)))
-        r1, r2 = row_map.get(int(m.group(2))), row_map.get(int(m.group(4)))
+        r1, r2 = _tr(int(m.group(2))), _tr(int(m.group(4)))
         if None in (c1, c2, r1, r2):
             totals["tables_downgraded"] = totals.get("tables_downgraded", 0) + 1
             continue

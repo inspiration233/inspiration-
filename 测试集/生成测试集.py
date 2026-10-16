@@ -369,6 +369,127 @@ def scenario_e():
     save(wb, d / "单行表头带合并.xlsx")
 
 
+# ================================================================ 场景H~J (V2.x 需求对齐)
+
+def scenario_h():
+    """保真全家桶: 条件格式/批注/行高/冻结/打印/智能表格/公式/跨表公式/下拉/混合方向"""
+    print("场景H: 保真全家桶(V2.0/V2.1)")
+    d = ROOT / "场景H_保真全家桶"
+    from openpyxl.comments import Comment
+    from openpyxl.formatting.rule import CellIsRule, FormulaRule
+    from openpyxl.worksheet.datavalidation import DataValidation
+    from openpyxl.worksheet.table import Table
+
+    wb = Workbook(); ws = wb.active; ws.title = "纵向表"
+    ws.append(["编号", "月份", "销量", "目标", "达成率", "状态", "备注"])
+    months = ["1月", "2月", "3月", "4月", "5月", "6月", "7月", "8月", "9月", "10月", "11月", "12月"]
+    for i, m in enumerate(months, start=1):
+        target = 100 + i * 10
+        sales = target - (15 if i % 3 == 0 else 2)
+        ws.append([f"DD{2000 + i}", m, sales, target, f"=C{i + 1}/D{i + 1}",
+                   "达标" if sales >= target * 0.9 else "未达",
+                   ("=横向表!B2" if i == 1 else None)])
+    ws["G2"] = "=横向表!B2"                      # 跨表引用公式 → 平移不了转值
+    ws["D2"].comment = Comment("含大客户返点", "制表人")
+    ws.row_dimensions[2].height = 24
+    ws.freeze_panes = "A2"
+    ws.page_setup.orientation = "landscape"
+    ws.page_setup.paperSize = 9
+    dv = DataValidation(type="list", formula1='"达标,未达"', allow_blank=True)
+    ws.add_data_validation(dv); dv.add("F2:F13")
+    ws.conditional_formatting.add("E2:E13", CellIsRule(
+        operator="lessThan", formula=["0.9"],
+        fill=PatternFill("solid", fgColor="FFC7CE")))
+    ws.conditional_formatting.add("F2:F13", FormulaRule(
+        formula=['$F2="未达"'], font=Font(color="9C0006")))
+    ws.add_table(Table(displayName="销售表", ref="A1:G13"))
+    for col, w in zip("ABCDEFG", [10, 8, 10, 10, 10, 8, 14]):
+        ws.column_dimensions[col].width = w
+    save(wb, d / "保真全家桶.xlsx")
+
+    wb = Workbook(); ws = wb.active; ws.title = "横向表"
+    ws.append(["指标", "华东", "华南", "华北"])
+    for name, *vals in [("销量合计", 3200, 2800, 3500), ("目标合计", 3600, 3000, 3600),
+                        ("毛利率", 0.32, 0.28, 0.35)]:
+        ws.append([name, *vals])
+    for col in "ABCD":
+        ws.column_dimensions[col].width = 14
+    save(wb, d / "横向表.xlsx")
+
+
+def scenario_i():
+    """同模板多单位填报: 前置区(标题/说明全同 + 制表人差异) + 公式 + 合计行"""
+    print("场景I: 同模板多单位填报")
+    d = ROOT / "场景I_同模板多单位填报"
+    items = [("产品销售", 820.5, 701.2), ("服务收入", 456.0, 402.8),
+             ("其他收益", 88.4, 95.1), ("成本支出", 986.3, 900.6),
+             ("期间费用", 321.7, 300.2), ("利润总额", 56.9, -1.5)]
+
+    def form(path, unit, person, date, extra=0, summary=False):
+        wb = Workbook(); ws = wb.active; ws.title = "季度报表"
+        ws.append(["2026年第三季度经营情况表"]); ws.merge_cells("A1:F1")
+        ws["A1"].font = Font(bold=True, size=14)
+        ws["A1"].alignment = Alignment(horizontal="center")
+        ws.append(["注：金额单位为万元，结果保留两位小数。"]); ws.merge_cells("A2:F2")
+        ws.append(["填报单位：", unit, "制表人：", person, "填报日期：", date])
+        ws.row_dimensions[3].height = 20
+        ws.append(["序号", "项目", "本期金额", "上年同期", "增长率"])
+        rows = items + ([("补充项", round(random.uniform(10, 99), 1),
+                          round(random.uniform(10, 99), 1))] * extra)
+        for i, (name, cur, prev) in enumerate(rows, start=1):
+            r = i + 4
+            ws.append([i, name, cur, prev, f"=C{r}/D{r}-1"])
+        if summary:
+            ws.append(["合计", None,
+                       round(sum(r[1] for r in rows), 2),
+                       round(sum(r[2] for r in rows), 2), None])
+        style_header(ws, row=4)
+        save(wb, d / path)
+
+    form("单位甲_季度报表.xlsx", "甲分公司", "王芳", "2026.10.08")
+    form("单位乙_季度报表.xlsx", "乙分公司", "李娜", "2026.10.10", extra=1)
+    form("单位丙_季度报表.xlsx", "丙分公司", "张伟", "2026.10.12", summary=True)
+
+
+def scenario_j():
+    """方向与序列: 序列数据列不误判/流水号不误判/低置信交叉表/混合方向"""
+    print("场景J: 方向与序列")
+    d = ROOT / "场景J_方向与序列"
+
+    wb = Workbook(); ws = wb.active; ws.title = "月度"
+    ws.append(["月份", "销量", "金额"])
+    for i in range(1, 13):
+        ws.append([f"{i}月", 100 + i * 7, round((100 + i * 7) * 3.5, 1)])
+    style_header(ws)
+    save(wb, d / "序列月份_纵向.xlsx")
+
+    wb = Workbook(); ws = wb.active; ws.title = "台账"
+    ws.append(["编号", "客户", "金额"])
+    names = ["客户A", "客户B", "客户C", "客户D"]
+    for i in range(1, 21):
+        ws.append([f"DD{1000 + i}", names[i % 4], round(random.uniform(50, 500), 1)])
+    style_header(ws)
+    save(wb, d / "流水号不误判.xlsx")
+
+    wb = Workbook(); ws = wb.active; ws.title = "模糊"
+    ws.append(["项目", "甲", "乙", "丙"])
+    for i in range(1, 5):
+        ws.append([f"项{i}", "数据", "数据", "数据"])
+    save(wb, d / "交叉表_低置信.xlsx")
+
+    wb = Workbook(); wb.remove(wb.active)
+    ws = wb.create_sheet("纵向页")
+    ws.append(["客户", "金额", "日期"])
+    for i in range(1, 6):
+        ws.append([f"客户{i}", i * 100.0, f"2026-10-{i:02d}"])
+    style_header(ws)
+    hs = wb.create_sheet("横向页")
+    hs.append(["客户", "上海岚图", "北京中科", "杭州明启"])
+    hs.append(["金额", 12000, 9500, 23300])
+    hs.append(["日期", "2026-09-01", "2026-09-18", "2026-10-02"])
+    save(wb, d / "混合方向.xlsx")
+
+
 # ================================================================ 边缘情况
 def edge_cases():
     print("边缘情况")
@@ -560,6 +681,9 @@ def main():
     scenario_c()
     scenario_d()
     scenario_e()
+    scenario_h()
+    scenario_i()
+    scenario_j()
     edge_cases()
     if not args.skip_large:
         large_scale(args.rows)

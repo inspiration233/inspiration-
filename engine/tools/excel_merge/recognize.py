@@ -135,13 +135,10 @@ def detect_orientation(window_rows, window=HEADER_SCAN_WINDOW):
 
     t = transpose_window(window_rows)
     net = 0
-    # 1) 序列标签(强)
-    row_seq = any(_seq_labels(r) for r in window_rows[:window])
-    col_seq = any(_seq_labels(c) for c in t[:window])
-    if row_seq and not col_seq:
+    # 1) 序列标签(强, 仅行方向): 表头行含 类别1..4/1月.. 这类序列 → 纵向。
+    #    列方向的序列(月份/序号数据列、项1..项4 行标签)大多是数据维度, 不能作横向信号。
+    if any(_seq_labels(r) for r in window_rows[:window]):
         net += 2
-    elif col_seq and not row_seq:
-        net -= 2
     # 2) 列类型纯度
     def _kind(v):
         if v in (None, ""):
@@ -234,11 +231,20 @@ class HeaderDetect:
 
 
 def detect_header_row(window_rows, window=HEADER_SCAN_WINDOW):
-    """window_rows: 前 N 行的值列表（1-based 索引即行号）。平手取更早的行。"""
+    """window_rows: 前 N 行的值列表（1-based 索引即行号）。平手取更早的行。
+
+    "下一行像数据"(≥2个数字/日期形态格)给 +0.15：真表头下面是数据行，
+    而"标签：值"型盖章/制表行的下一行往往仍是纯文本(真表头)，以此区分。
+    """
     width = max((len(r) for r in window_rows), default=0)
     scores = {}
     for i, cells in enumerate(window_rows[:window], start=1):
-        scores[i] = score_header_row(cells, width)
+        s = score_header_row(cells, width)
+        if s > 0 and i < len(window_rows):
+            nxt = _row_nonempty(window_rows[i])
+            if sum(1 for v in nxt if is_numberlike(v)) >= 2:
+                s += 0.15
+        scores[i] = s
     ranked = sorted(((s, -r) for r, s in scores.items() if s > 0), reverse=True)
     if not ranked:
         return HeaderDetect(0, scores, False, None)
