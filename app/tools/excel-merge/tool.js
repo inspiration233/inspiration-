@@ -10,7 +10,7 @@ window.toolMount = (root, ctx) => {
 
   // ---------------- 设置（记忆上次） ----------------
   const DEF = {
-    mode: 'single', align: 'loose', style: 'unified', templateIndex: 0,
+    mode: 'single', align: 'loose', style: 'fidelity', templateIndex: 0,
     headerAuto: '0', headerRow: 1, removeSummary: true, keywords: ['合计', '小计', '总计', '汇总', '累计'],
     source: false, hidden: false, title: false, outDir: '',
     stripSerial: true, renumberSerial: true,

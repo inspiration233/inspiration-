@@ -29,7 +29,8 @@ class Cancelled(Exception):
 class Options:
     mode: str = "single"
     align: str = "loose"                    # strict | loose
-    style: str = "unified"                  # unified | preserve
+    style: str = "fidelity"                 # fidelity(原生保真,默认) | fast(高速流式)
+    auto_group: bool = True                 # 异构表自动分组到不同 Sheet
     template_index: int = 0                 # 表头模板 = 第几个源（0 起）
     remove_summary: bool = True
     summary_keywords: tuple = DEFAULT_SUMMARY_KEYWORDS
@@ -58,7 +59,12 @@ def _new_report(mode, options):
         "totals": {"files_ok": 0, "files_failed": 0, "sheets_merged": 0,
                    "rows_written": 0, "summary_rows_removed": 0, "empty_rows_skipped": 0,
                    "empty_sources": 0, "hidden_sheets_skipped": 0,
-                   "big_numbers_converted": 0},
+                   "big_numbers_converted": 0,
+                   "formulas_translated": 0, "formulas_to_value": 0,
+                   "validations_kept": 0, "validations_dropped": 0,
+                   "cf_kept": 0, "cf_dropped": 0, "row_heights_set": 0,
+                   "tables_kept": 0, "tables_downgraded": 0,
+                   "group_count": 1},
         "warnings": [],
         "header_detections": [],            # 每源: display/header_row/height/title/低置信/警告
         "duration_sec": 0.0,
@@ -163,42 +169,109 @@ def merge(paths, out_path, options=None, progress=None, cancel=None):
             report["warnings"].append("没有可合并的数据")
             return report
 
-        book = OutputBook(out_path, options.style)
+        options.style = {"unified": "fast", "preserve": "fidelity"}.get(
+            options.style, options.style)
 
-        # 2) 按模式分表
+        # 2) 分组：workbook=每源一页；group=按Sheet名；single/sheets=按结构签名异构分组
+        def _sig(s):
+            return (frozenset(s.structure.keys), s.structure.height)
+
+        def _seg_set(s):
+            return {k.rsplit("/", 1)[-1] for k in s.structure.keys}
+
+        def _by_signature(sources):
+            # 末段键重叠度聚类: >50% 视为同构(宽容对齐可处理小差异),
+            # 结构迥异(统计表 vs 明细)自动分组
+            clusters = []
+            for s in sources:
+                ss = _seg_set(s)
+                best, best_r = None, 0.0
+                for gs, members in clusters:
+                    r = len(ss & gs) / max(len(ss), len(gs), 1)
+                    if r > best_r:
+                        best, best_r = (gs, members), r
+                if best is not None and best_r >= 0.5:
+                    best[1].append(s)
+                else:
+                    clusters.append((ss, [s]))
+            return [m for _, m in clusters]
+
         if options.mode == "workbook":
-            groups = [[s] for s in usable]
+            groups = [(s.structure.sheet_name, [s]) for s in usable]
         elif options.mode == "group":
             by_name = {}
             for s in usable:
                 by_name.setdefault(s.structure.sheet_name, []).append(s)
-            groups = list(by_name.values())
+            groups = []
+            for bucket in by_name.values():
+                subs = _by_signature(bucket) if options.auto_group else [bucket]
+                groups.extend((b[0].structure.sheet_name, b) for b in subs)
         else:  # single / sheets
-            groups = [usable]
+            subs = _by_signature(usable) if options.auto_group else [usable]
+            stems = [b[0].path.stem for b in subs]
+            groups = []
+            for i, b in enumerate(subs):
+                if i == 0:
+                    name = "总表"
+                elif stems.count(b[0].path.stem) > 1:
+                    name = b[0].structure.sheet_name      # 同一文件拆出的组用Sheet名
+                else:
+                    name = b[0].path.stem                 # 跨文件的组用文件名
+                groups.append((name, b))
+        totals["group_count"] = len(groups)
+        report["groups"] = [{"sheet": n, "sources": [s.display for s in b]}
+                            for n, b in groups]
+        if len(groups) > 1:
+            report["warnings"].append(
+                f"检测到 {len(groups)} 种不同表结构，已自动分组到不同 Sheet（详见报告）")
 
-        # 3) 逐组合并写出
-        try:
-            for group in groups:
-                template_index = min(options.template_index, len(group) - 1)
-                _merge_group(book, group, options, template_index,
-                             report, progress, cancel)
-        except Cancelled:
+        # 3) 逐组合并写出（保真 / 高速 两条路径）
+        if options.style == "fidelity":
+            from . import fidelity as fid
+            book = fid.FidelityBook(out_path)
             try:
-                book.save()                     # 落盘取消前已完成的部分
-            except Exception:
-                pass
-            report["cancelled"] = True
-            report["warnings"].append("已取消：输出文件为取消前已完成的部分")
+                for name, grp in groups:
+                    fid.merge_group_fidelity(book, grp, options, 0, report,
+                                             progress, cancel, base_name=name)
+                book.save()
+            except (Cancelled, KeyboardInterrupt):
+                try:
+                    book.save()
+                except Exception:
+                    pass
+                report["cancelled"] = True
+                report["warnings"].append("已取消：输出文件为取消前已完成的部分")
+                totals["big_numbers_converted"] += book.big_numbers_converted
+                report["output"] = str(out_path)
+                report["duration_sec"] = round(time.monotonic() - t0, 2)
+                report = _finalize(report)
+                _write_log(out_path, report)
+                return report
+            totals["big_numbers_converted"] += book.big_numbers_converted
+        else:
+            book = OutputBook(out_path, "fast")
+            try:
+                for name, group in groups:
+                    template_index = min(options.template_index, len(group) - 1)
+                    _merge_group(book, group, options, template_index,
+                                 report, progress, cancel, base_name=name)
+            except Cancelled:
+                try:
+                    book.save()                     # 落盘取消前已完成的部分
+                except Exception:
+                    pass
+                report["cancelled"] = True
+                report["warnings"].append("已取消：输出文件为取消前已完成的部分")
+                totals["big_numbers_converted"] = book.big_numbers_converted
+                report["output"] = str(out_path)
+                report["duration_sec"] = round(time.monotonic() - t0, 2)
+                report = _finalize(report)
+                _write_log(out_path, report)
+                return report
+            except AlignError:
+                raise
+            book.save()
             totals["big_numbers_converted"] = book.big_numbers_converted
-            report["output"] = str(out_path)
-            report["duration_sec"] = round(time.monotonic() - t0, 2)
-            report = _finalize(report)
-            _write_log(out_path, report)
-            return report
-        except AlignError:
-            raise
-        book.save()
-        totals["big_numbers_converted"] = book.big_numbers_converted
     finally:
         for r in readers:
             r.close()
@@ -214,10 +287,11 @@ def _is_empty_source(src):
     return False
 
 
-def _merge_group(book, group, options, template_index, report, progress, cancel):
+def _merge_group(book, group, options, template_index, report, progress, cancel,
+                 base_name=None):
     totals = report["totals"]
-    base_name = (group[0].structure.sheet_name if options.mode in ("workbook", "group")
-                 else "总表")
+    base_name = base_name or (group[0].structure.sheet_name
+                              if options.mode in ("workbook", "group") else "总表")
 
     if options.mode == "workbook":
         out_keys, maps = list(group[0].structure.keys), [[i for i in range(len(group[0].structure.keys))]]
@@ -261,8 +335,8 @@ def _merge_group(book, group, options, template_index, report, progress, cancel)
     page = book.add_table(base_name, header_rows, merges, extra_texts, source_label)
     page_capacity = XLSX_MAX_ROWS
 
-    # 列宽：保留样式模式 / 工作簿拷贝模式 复制模板列宽
-    keep_look = options.style == "preserve" or options.mode == "workbook"
+    # 高速路径：仅工作簿拷贝模式还原数据区结构（保真路径独立实现）
+    keep_look = options.mode == "workbook"
     if keep_look:
         inv0 = {si: oi for oi, si in enumerate(maps[0]) if si is not None}
         widths = {inv0[c - 1] + 1: w for c, w in template.structure.col_widths.items()

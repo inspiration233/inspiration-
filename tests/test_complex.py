@@ -32,8 +32,8 @@ def test_data_area_merge_restoration(out_path):
     # 数据区合并: 填报单位整块 / 分组列 / 年份两行一组
     for ref in ("B3:B18", "C3:C18", "F3:F6", "F7:F11", "I3:I4", "I5:I6"):
         assert ref in merged, ref
-    # 公式读到缓存值(Excel保存的真实文件才有)
-    assert isinstance(ws["C3"].value, (int, float))
+    # V2.0: 公式保留并平移(数据行6→3, 位移-3)
+    assert str(ws["C3"].value).startswith("=") and "G7" in str(ws["C3"].value)
     # 列宽复制
     assert (ws.column_dimensions["H"].width or 0) > 0
 

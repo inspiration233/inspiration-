@@ -77,11 +77,12 @@ def test_c_sheets_mode(out_path):
     ws = wb.active
     header = [c.value for c in ws[1]]
     assert header[:6] == ["日期", "单号", "商品", "数量", "金额", "经手人"]
-    # 空白页跳过；周四合计行(在8行之外)剔除；作废单(结构不同)宽容并入
+    # V2.0: 作废单(结构不同)自动分组到独立 Sheet；主表为 4 个日结页 - 合计行
     rows = rows_of(ws)
-    assert len(rows) == 8 * 4 + 1
-    assert "说明" in header                              # 作废单的列作为追加列并入
-    assert any(r[6] == "NO1024" for r in rows)
+    assert len(rows) == 8 * 4
+    assert "作废单" in wb.sheetnames                     # 异构自动分组
+    ws2 = wb["作废单"]
+    assert any(r[0] == "NO1024" for r in rows_of(ws2))
     assert r["totals"]["summary_rows_removed"] == 1
 
 
@@ -223,6 +224,8 @@ def test_pagination(monkeypatch, out_path):
     import importlib
     m = importlib.import_module("engine.tools.excel_merge.merge")
     monkeypatch.setattr(m, "XLSX_MAX_ROWS", 30)
+    f = importlib.import_module("engine.tools.excel_merge.fidelity")
+    monkeypatch.setattr(f, "XLSX_MAX_ROWS", 30)          # 保真路径的分页上限在fidelity模块
     a = scenario("场景A_多文件纵向合并")
     r = run([a / "部门A_销售明细.xlsx", a / "部门B_销售明细.xlsx",
              a / "部门D_销售明细.xlsx"], out_path)

@@ -474,6 +474,24 @@ def edge_cases():
         ws.column_dimensions[c].width = 22
     save(wb, d / "横向表.xlsx")
 
+    # 10) 下拉列表/行高: 内联列表 + 引用隐藏配置页的数据验证 + 自定义行高
+    from openpyxl.worksheet.datavalidation import DataValidation
+    wb = Workbook(); wb.remove(wb.active)
+    ws = wb.create_sheet("登记")
+    cfg = wb.create_sheet("配置")
+    cfg["A1"] = "待审批"; cfg["A2"] = "已审批"; cfg["A3"] = "已驳回"
+    cfg.sheet_state = "hidden"
+    ws.append(["事项", "审批状态", "类型", "金额"])
+    dv1 = DataValidation(type="list", formula1='"日常,紧急,专项"', allow_blank=True)
+    dv2 = DataValidation(type="list", formula1="配置!$A$1:$A$3", allow_blank=True)
+    ws.add_data_validation(dv1); ws.add_data_validation(dv2)
+    dv1.add("C2:C9"); dv2.add("B2:B9")
+    for i in range(1, 9):
+        ws.append([f"事项{i}", None, None, round(random.uniform(100, 5000), 2)])
+        ws.row_dimensions[i + 1].height = 22
+    style_header(ws)
+    save(wb, d / "下拉列表.xlsx")
+
     # 9) 序号空行: 第3/5行只有序号没有内容 —— 剔除后序号重排 1..N 的靶子
     wb = Workbook(); ws = wb.active; ws.title = "台账"
     ws.append(["序号", "事项", "金额", "经手人"])
