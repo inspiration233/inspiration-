@@ -39,9 +39,10 @@ def test_data_area_merge_restoration(out_path):
 
 
 def test_unified_mode_keeps_clean_data(out_path):
-    """统一样式模式不做数据区合并还原（干净数据原则）。"""
-    r = merge([str(F)], out_path, Options(mode="workbook", style="unified"))
+    """统一样式 + 纵向合并模式不做数据区合并还原（干净数据原则）。
+    注意：工作簿模式是页面拷贝语义，即使统一样式也还原数据区合并。"""
+    r = merge([str(F)], out_path, Options(mode="single", style="unified"))
     assert r["totals"].get("data_merges_preserved", 0) == 0
-    ws = load(out_path)["Sheet2"]
+    ws = load(out_path).active
     merged = {str(x) for x in ws.merged_cells.ranges}
     assert "B3:B18" not in merged                              # 仅表头区合并
