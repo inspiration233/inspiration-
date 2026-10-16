@@ -20,6 +20,7 @@ contextBridge.exposeInMainWorld('toolbox', {
   },
   // 窗口控制
   winControl: (action) => ipcRenderer.send('win:ctl', action),
+  setBackground: (color) => ipcRenderer.send('win:set-bg', color),
   // 应用信息
   info: () => ipcRenderer.invoke('app:info'),
 });

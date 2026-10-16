@@ -1,6 +1,6 @@
 // -*- coding: utf-8 -*-
 // 工具箱壳 · Electron 主进程：无边框窗口 / Python sidecar 管理 / 对话框与路径 IPC
-const { app, BrowserWindow, ipcMain, dialog, shell: shellOs } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell: shellOs, nativeTheme } = require('electron');
 const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
@@ -8,6 +8,10 @@ const fs = require('fs');
 const ROOT = path.resolve(__dirname, '..');            // 仓库根（engine 所在）
 const PYTHON = process.env.TOOLBOX_PYTHON || 'python';
 const IS_SMOKE = process.argv.includes('--smoke');
+
+// 已知问题缓解: Windows 下窗口遮挡计算会造成还原/缩放白闪
+app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
+const themeBg = () => (nativeTheme.shouldUseDarkColors ? '#0f1420' : '#eef1f7');
 const IS_UITEST = process.argv.includes('--uitest');
 
 let win = null;
@@ -86,7 +90,7 @@ function createWindow() {
     minWidth: 800,
     minHeight: 560,
     frame: false,
-    backgroundColor: '#0f1420',
+    backgroundColor: themeBg(),   // 初始底色跟随系统主题，避免缩放时闪异色
     show: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -271,6 +275,11 @@ ipcMain.on('engine:cancel', () => {
   if (sidecar) sidecar.stdin.write('{"cmd":"cancel"}\n');
 });
 ipcMain.handle('open:show', (_e, p) => shellOs.showItemInFolder(p));
+// 主题切换时同步窗口原生底色（消除浅深切换/缩放时的底色闪烁）
+ipcMain.on('win:set-bg', (_e, color) => {
+  if (win && /^#[0-9a-fA-F]{6}$/.test(color)) win.setBackgroundColor(color);
+});
+
 ipcMain.on('win:ctl', (_e, action) => {
   if (!win) return;
   if (action === 'min') win.minimize();

@@ -16,6 +16,8 @@
     const dark = savedTheme === 'dark' ||
       (savedTheme === 'auto' && matchMedia('(prefers-color-scheme: dark)').matches);
     document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+    // 同步窗口原生底色: 无边框窗口缩放时露出的区域不再闪异色
+    toolbox.setBackground?.(dark ? '#0f1420' : '#eef1f7');
   };
   applyTheme();
   matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyTheme);
