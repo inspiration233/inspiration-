@@ -45,6 +45,7 @@ class SheetStructure:
     merges: list                         # 表头区内原始 MergeRange（输出模板用）
     all_merges: list = field(default_factory=list)   # 全表合并范围（数据区还原用）
     col_widths: dict = field(default_factory=dict)   # 列宽（保留样式复制用）
+    orientation: str = "vertical"         # vertical 常规 | horizontal 横向表(转置读取)
     title: str = None                    # 识别到的标题文本（不进总表，进报告）
     low_confidence: bool = False
     warnings: list = field(default_factory=list)
@@ -196,6 +197,12 @@ class _XlsxReader:
             return SheetStructure(sheet_name, 0, 0, [], [], empty=True)
 
         ranges = xlsx_merge_ranges(self.path, sheet_name)
+        orientation = "vertical"
+        if force == 0 and window and (ws.max_row or 0) <= 20000 \
+                and (ws.max_column or 0) <= 500:
+            orientation = recognize.detect_orientation(window)
+        if orientation == "horizontal":
+            return self._structure_transposed(ws, sheet_name, ranges)
         if force > 0:
             det = recognize.detect_header_row(window)
             header_row = force
@@ -224,15 +231,53 @@ class _XlsxReader:
             st.warnings.append("未探测到表头，已按第 1 行处理（可手动指定）")
         return st
 
+    def _structure_transposed(self, ws, sheet_name, ranges):
+        """横向表：在转置视图（行=原列）上跑同一套识别逻辑。"""
+        buf = [list(row) for row in ws.iter_rows(values_only=True)]
+        ncols = max((len(r) for r in buf), default=0)
+        tv = [[(buf[r][c] if c < len(buf[r]) else None) for r in range(len(buf))]
+              for c in range(min(ncols, XLSX_WINDOW))]
+        ranges = [mg.transposed() for mg in ranges]
+        det = recognize.detect_header_row(tv)
+        header_row = det.header_row or 1
+        header_row = recognize.extend_header_up(tv, header_row, ranges)
+        height = recognize.detect_region_height(tv, header_row, ranges)
+        keys = recognize.flatten_keys(tv, header_row, height, ranges)
+        st = SheetStructure(
+            sheet_name=sheet_name, header_row=header_row, height=height,
+            keys=keys, orientation="horizontal",
+            merges=[mg for mg in ranges if mg.min_row >= header_row
+                    and mg.max_row <= header_row + height - 1],
+            all_merges=ranges)
+        warn = recognize.out_of_bounds_merge_warning(ranges, header_row, height)
+        if warn:
+            st.warnings.append(warn)
+        if det.header_row == 0:
+            st.warnings.append("未探测到表头，已按第 1 行处理（可手动指定）")
+        return st
+
     def iter_data_rows(self, source):
         ws = self.wb[source.sheet_name]
-        start = source.structure.header_row + source.structure.height
+        st = source.structure
+        start = st.header_row + st.height
+        if st.orientation == "horizontal":
+            # 横向表：原列=记录。整表缓冲（方向探测已限 20000行×500列）
+            buf = [list(row) for row in ws.iter_rows()]
+            ncols = max((len(r) for r in buf), default=0)
+            for c in range(start - 1, ncols):
+                yield c + 1, [(buf[r][c] if c < len(buf[r]) else None)
+                              for r in range(len(buf))]
+            return
         for row_no, row in enumerate(ws.iter_rows(min_row=start), start=start):
             yield row_no, [c for c in row]   # ReadOnlyCell 列表（带 number_format/font/fill）
 
     def header_cells(self, source):
         ws = self.wb[source.sheet_name]
         st = source.structure
+        if st.orientation == "horizontal":
+            buf = [list(row) for row in ws.iter_rows()]
+            return [[(buf[r][c] if c < len(buf[r]) else None) for r in range(len(buf))]
+                    for c in range(st.header_row - 1, st.header_row - 1 + st.height)]
         rows = []
         for row in ws.iter_rows(min_row=st.header_row, max_row=st.header_row + st.height - 1):
             rows.append([c for c in row])
@@ -368,6 +413,20 @@ class _CsvReader:
         window = [r for r in self.window]  # 前导空行参与窗口但计分为 0
         if not any(recognize._row_nonempty(r) for r in window):
             return SheetStructure(sheet_name, 0, 0, [], [], empty=True)
+        orientation = "vertical"
+        if force == 0:
+            orientation = recognize.detect_orientation(window)
+        if orientation == "horizontal":
+            rows = [r for r in self._reopen()]
+            ncols = max((len(r) for r in rows), default=0)
+            tv = [[(rows[r][c] if c < len(rows[r]) else None)
+                   for r in range(len(rows))] for c in range(min(ncols, XLSX_WINDOW))]
+            det = recognize.detect_header_row(tv)
+            header_row = det.header_row or 1
+            keys = recognize.flatten_keys(tv, header_row, 1, [])
+            return SheetStructure(sheet_name, header_row, 1, keys, [],
+                                  orientation="horizontal",
+                                  low_confidence=det.low_confidence)
         det = recognize.detect_header_row(window)
         header_row = force if force > 0 else (det.header_row or 1)
         keys = recognize.flatten_keys(window, header_row, 1, [])
@@ -380,12 +439,24 @@ class _CsvReader:
 
     def iter_data_rows(self, source):
         start = source.structure.header_row          # csv 高度恒 1
+        if source.structure.orientation == "horizontal":
+            rows = [r for r in self._reopen()]
+            ncols = max((len(r) for r in rows), default=0)
+            for c in range(start, ncols + 1):
+                yield c, [((rows[r][c - 1] if c - 1 < len(rows[r]) else "") or None)
+                          for r in range(len(rows))]
+            return
         for i, row in enumerate(self._reopen(), start=1):
             if i > start:
                 yield i, [v if v != "" else None for v in row]   # 原生值直传
 
     def header_cells(self, source):
         r = source.structure.header_row
+        if source.structure.orientation == "horizontal":
+            rows = [row for row in self._reopen()]
+            col = [((rows[i][r - 1] if r - 1 < len(rows[i]) else "") or None)
+                   for i in range(len(rows))]
+            return [[_PseudoCell(v) for v in col]]
         row = self.window[r - 1] if r - 1 < len(self.window) else []
         return [[_PseudoCell(v if v != "" else None) for v in row]]
 

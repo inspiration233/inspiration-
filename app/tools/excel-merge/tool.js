@@ -13,6 +13,7 @@ window.toolMount = (root, ctx) => {
     mode: 'single', align: 'loose', style: 'unified', templateIndex: 0,
     headerAuto: '0', headerRow: 1, removeSummary: true, keywords: ['合计', '小计', '总计', '汇总', '累计'],
     source: false, hidden: false, title: false, outDir: '',
+    stripSerial: true, renumberSerial: true,
   };
   let cfg = { ...DEF, ...JSON.parse(localStorage.getItem('excelMergeCfg') || '{}') };
   const saveCfg = () => localStorage.setItem('excelMergeCfg', JSON.stringify(cfg));
@@ -145,7 +146,7 @@ window.toolMount = (root, ctx) => {
     div.className = 'detail';
     div.innerHTML = f.detections.map((d) => `
       <div class="line"><b>${d.display}</b></div>
-      <div class="line">表头第 ${d.header_row} 行 · ${d.height} 行高 · ${d.columns.length} 列${d.title ? ` · 标题(不入表): ${d.title}` : ''}</div>
+      <div class="line">排列: ${d.orientation === 'horizontal' ? '横向表（已自动转正）' : '纵向'} · 表头第 ${d.header_row} 行 · ${d.height} 行高 · ${d.columns.length} 列${d.title ? ` · 标题(不入表): ${d.title}` : ''}</div>
       ${d.low_confidence ? '<div class="line w">⚠ 两个候选表头行得分接近，请核对</div>' : ''}
       ${(d.warnings || []).map((w) => `<div class="line w">⚠ ${w}</div>`).join('')}
       <div class="line">列: ${d.columns.join(' | ')}</div>`).join('<hr style="border:none;border-top:1px solid var(--hairline-2);margin:6px 0">');
@@ -227,6 +228,8 @@ window.toolMount = (root, ctx) => {
     });
   };
   bindSwitch('opt-summary', 'removeSummary');
+  bindSwitch('opt-serial-strip', 'stripSerial');
+  bindSwitch('opt-serial-num', 'renumberSerial');
   bindSwitch('opt-source', 'source');
   bindSwitch('opt-hidden', 'hidden');
   bindSwitch('opt-title', 'title');
@@ -284,6 +287,7 @@ window.toolMount = (root, ctx) => {
       mode: cfg.mode, align: cfg.align, style: cfg.style,
       template_index: Number(cfg.templateIndex) || 0,
       remove_summary: cfg.removeSummary, summary_keywords: cfg.keywords,
+      strip_serial_rows: cfg.stripSerial, renumber_serial: cfg.renumberSerial,
       source_column: cfg.source, include_hidden: cfg.hidden,
       title_as_header: cfg.title,
       force_header_row: cfg.headerAuto === '1' ? (Number(cfg.headerRow) || 1) : 0,

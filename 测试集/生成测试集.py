@@ -462,6 +462,32 @@ def edge_cases():
     style_header(ws)
     save(wb, d / "重名列与无名列.xlsx")
 
+    # 8) 横向表(转置): 字段在首列A, 记录按列排列(B/C/D) —— 方向自动识别靶子
+    wb = Workbook(); ws = wb.active; ws.title = "横向"
+    ws.append(["客户", "上海岚图贸易有限公司", "北京中科联合实业有限公司", "杭州明启科技有限公司"])
+    ws.append(["联系人", "王芳", "李娜", "张伟"])
+    ws.append(["签订日期", dt.date(2026, 8, 12), dt.date(2026, 9, 3), dt.date(2026, 10, 1)])
+    ws.append(["金额", 128000.0, 96500.5, 233000.0])
+    ws.append(["回款状态", "已结清", "部分回款", "未回款"])
+    ws.append(["备注", None, "分两期", None])
+    for c in "ABCD":
+        ws.column_dimensions[c].width = 22
+    save(wb, d / "横向表.xlsx")
+
+    # 9) 序号空行: 第3/5行只有序号没有内容 —— 剔除后序号重排 1..N 的靶子
+    wb = Workbook(); ws = wb.active; ws.title = "台账"
+    ws.append(["序号", "事项", "金额", "经手人"])
+    data = [("复印纸采购", 350.0, "王芳"), None, ("打印机维修", 1200.0, "李娜"),
+            None, None, ("团建费用", 8000.0, "张伟"), ("快递费", 156.5, "王芳")]
+    for i, item in enumerate(data, start=1):
+        if item is None:
+            ws.append([i, None, None, None])          # 仅序号的空行
+        else:
+            ws.append([i, item[0], item[1], item[2]])
+    ws.append(["合计", None, 9706.5, None])           # 尾部合计(同时验证剔除)
+    style_header(ws)
+    save(wb, d / "序号空行.xlsx")
+
     # 7) 隐藏Sheet: 可见"销售"页 + 隐藏"配置"页(模板下拉选项, 真实模板常有) —— 默认跳过隐藏页并报告
     wb = Workbook(); wb.remove(wb.active)
     ws = wb.create_sheet("销售")

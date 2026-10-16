@@ -77,6 +77,10 @@ class MergeRange:
     def vertical(self):
         return self.max_row > self.min_row
 
+    def transposed(self):
+        """行列互换后的等价范围（横向表读取用）。"""
+        return MergeRange(self.min_row, self.min_col, self.max_row, self.max_col)
+
 
 def _coord(cell_ref: str):
     m = re.match(r"([A-Z]+)(\d+)", cell_ref.strip().upper())
@@ -87,6 +91,67 @@ def _coord(cell_ref: str):
     for ch in letters:
         col = col * 26 + (ord(ch) - 64)
     return col, digits
+
+
+def detect_orientation(window_rows, window=HEADER_SCAN_WINDOW):
+    """方向探测：vertical = 字段在首行(常规)，horizontal = 字段在首列(转置表)。
+
+    小表两个方向的"表头行"可能都得满分（唯一文本 vs 唯一文本），打分器分不出。
+    决定性信号是**列类型纯度**：常规表的列同质（一列全是姓名/一列全是金额），
+    转置表按纵向读时每列文本/日期/数字混杂；转置后反而各"列"纯。
+    方向得分 = 0.5*表头得分 + 0.5*列纯度；横向显著更优时判横向（保守阈值）。
+    """
+    if not window_rows:
+        return "vertical"
+    width = max((len(r) for r in window_rows), default=0)
+    nonempty_rows = sum(1 for r in window_rows
+                        if any(v not in (None, "") for v in r))
+    if width < 3 or nonempty_rows < 3:
+        return "vertical"
+
+    def _kind(v):
+        if v in (None, ""):
+            return None
+        import datetime as _dt
+        if isinstance(v, (_dt.datetime, _dt.date)):
+            return "date"       # 日期独立成类: 混入文本会稀释列纯度区分度
+        return "num" if is_numberlike(v) else "text"
+
+    def _orientation_score(matrix):
+        best = max(detect_header_row(matrix, window).scores.values(), default=0.0)
+        header_row = detect_header_row(matrix, window).header_row or 1
+        # 表头行以下区域的列类型纯度
+        purity_sum, purity_n = 0.0, 0
+        for c in range(max(len(r) for r in matrix)):
+            kinds = {}
+            for row in matrix[header_row:header_row + 8]:
+                if c >= len(row):
+                    continue
+                k = _kind(row[c])
+                if k:
+                    kinds[k] = kinds.get(k, 0) + 1
+            total = sum(kinds.values())
+            if total >= 2:
+                purity_sum += max(kinds.values()) / total
+                purity_n += 1
+        purity = purity_sum / purity_n if purity_n else 0.0
+        return 0.5 * best + 0.5 * purity
+
+    v_score = _orientation_score(window_rows)
+    h_score = _orientation_score(transpose_window(window_rows))
+    if h_score >= 0.8 and h_score - v_score > 0.1:
+        return "horizontal"
+    return "vertical"
+
+
+def transpose_window(window_rows):
+    """行/列互换（列变行）。"""
+    width = max((len(r) for r in window_rows), default=0)
+    out = [[] for _ in range(width)]
+    for row in window_rows:
+        for c in range(width):
+            out[c].append(row[c] if c < len(row) else None)
+    return out
 
 
 # --------------------------------------------------------------- 表头行探测

@@ -14,7 +14,8 @@ from pathlib import Path
 
 from . import reader as rd
 from .align import AlignError, align_sources
-from .recognize import DEFAULT_SUMMARY_KEYWORDS, MergeRange, is_summary_row, normalize_name
+from .recognize import (DEFAULT_SUMMARY_KEYWORDS, MergeRange, is_numberlike,
+                       is_summary_row, normalize_name)
 from .writer import OutputBook, XLSX_MAX_ROWS
 
 MODES = ("single", "workbook", "sheets", "group")
@@ -32,6 +33,8 @@ class Options:
     template_index: int = 0                 # 表头模板 = 第几个源（0 起）
     remove_summary: bool = True
     summary_keywords: tuple = DEFAULT_SUMMARY_KEYWORDS
+    strip_serial_rows: bool = True          # 剔除"仅有序号"的空行
+    renumber_serial: bool = True            # 序号列重排(合并后连续编号)
     source_column: bool = False
     include_hidden: bool = False
     title_as_header: bool = False           # 以模板标题作总表标题（默认关）
@@ -71,6 +74,7 @@ def _finalize(report):
 def _sheet_record(src):
     st = src.structure
     return {"display": src.display, "sheet": st.sheet_name,
+            "orientation": getattr(st, "orientation", "vertical"),
             "header_row": st.header_row, "height": st.height,
             "columns": list(st.keys), "title": st.title,
             "low_confidence": st.low_confidence, "warnings": list(st.warnings)}
@@ -266,6 +270,11 @@ def _merge_group(book, group, options, template_index, report, progress, cancel)
         if widths:
             page.set_col_widths(widths)
 
+    # 序号列重排: 输出键为 序号/编号 的列用连续计数覆盖(跨文件连续)
+    serial_idx = next((i for i, k in enumerate(out_keys)
+                       if k in ("序号", "编号")), None)         if options.renumber_serial else None
+    serial_counter = 0
+
     rows_total = 0
     for fi, (src, mapping) in enumerate(zip(src_list, maps)):
         data_rows = 0
@@ -278,6 +287,12 @@ def _merge_group(book, group, options, template_index, report, progress, cancel)
             if all(v in (None, "") for v in values):
                 totals["empty_rows_skipped"] += 1
                 continue
+            if options.strip_serial_rows:
+                non_empty = [(i, v) for i, v in enumerate(values) if v not in (None, "")]
+                if (len(non_empty) == 1 and non_empty[0][0] == 0
+                        and is_numberlike(non_empty[0][1])):
+                    totals["serial_rows_removed"] = totals.get("serial_rows_removed", 0) + 1
+                    continue
             if options.remove_summary and is_summary_row(
                     values, options.summary_keywords):
                 totals["summary_rows_removed"] += 1
@@ -290,6 +305,10 @@ def _merge_group(book, group, options, template_index, report, progress, cancel)
                 page.paginate_restart(header_rows, merges, extra_texts, source_label)
                 report["warnings"].append(
                     f"「{base_name}」超出单页行数上限，已自动续写新页")
+            if serial_idx is not None and serial_idx < len(out_cells):
+                serial_counter += 1
+                out_cells[serial_idx] = _Renumber(
+                    serial_counter, out_cells[serial_idx])
             page.write_row(out_cells)
             rows_total += 1
             data_rows += 1
@@ -333,6 +352,15 @@ def _extra_header(group, maps, out_idx, key):
                 if cell is not None and getattr(cell, "value", None) not in (None, ""):
                     return str(cell.value)
     return key
+
+
+class _Renumber:
+    """序号重排值：新序号 + 原单元格(保留其样式)。"""
+    __slots__ = ("value", "_style_src")
+
+    def __init__(self, value, style_src):
+        self.value = value
+        self._style_src = style_src if hasattr(style_src, "value") else None
 
 
 class _Pseudo:

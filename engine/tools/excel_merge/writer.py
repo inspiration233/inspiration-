@@ -184,12 +184,14 @@ class _TablePage:
             value, converted = big_number_guard(value)
             if converted:
                 self.book.big_numbers_converted += 1
-            if preserve and hasattr(src, "value"):
+            ss = getattr(src, "_style_src", src)        # 序号重排值携带原样式
+            has_style = hasattr(ss, "value")
+            if preserve and has_style:
                 wc = WriteOnlyCell(self.ws, value=value if value is not None else "")
-                _copy_style(wc, src)
+                _copy_style(wc, ss)
                 out.append(wc)
                 continue
-            fmt = getattr(src, "number_format", None) if hasattr(src, "value") else None
+            fmt = getattr(ss, "number_format", None) if has_style else None
             if fmt and fmt != "General":
                 wc = WriteOnlyCell(self.ws, value=value if value is not None else "")
                 wc.number_format = fmt
