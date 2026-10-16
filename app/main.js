@@ -3,6 +3,7 @@
 const { app, BrowserWindow, ipcMain, dialog, shell: shellOs } = require('electron');
 const { spawn } = require('child_process');
 const path = require('path');
+const fs = require('fs');
 
 const ROOT = path.resolve(__dirname, '..');            // 仓库根（engine 所在）
 const PYTHON = process.env.TOOLBOX_PYTHON || 'python';
@@ -107,14 +108,22 @@ function createWindow() {
     const p1 = JSON.stringify(path.join(ROOT, '测试集', '场景E_表头智能识别', '报表_甲.xlsx'));
     const p2 = JSON.stringify(path.join(ROOT, '测试集', '场景E_表头智能识别', '报表_丙.csv'));
     const out = JSON.stringify(path.join(ROOT, '_uitest_out.xlsx'));
+    const shot = (name) => win.webContents.capturePage().then((img) => {
+      fs.writeFileSync(path.join(ROOT, name), img.toPNG());
+    });
     win.webContents.on('did-finish-load', async () => {
       try {
-        const r = await win.webContents.executeJavaScript(`(async () => {
+        const r1 = await win.webContents.executeJavaScript(`(async () => {
           const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
           document.querySelector('.tool-card')?.click();
           await sleep(700);
           const T = window.__emTest;
           if (!T) return 'no-hook';
+          // 回归防线: 状态面板初始必须真的隐藏(渲染层面)
+          const dn = getComputedStyle(document.querySelector('#done-pane')).display;
+          if (dn !== 'none') return 'done-pane-visible(display=' + dn + ')';
+          const pp = getComputedStyle(document.querySelector('#progress-pane')).display;
+          if (pp !== 'none') return 'progress-pane-visible(display=' + pp + ')';
           T.addPaths([${p1}, ${p2}]);
           for (let i = 0; i < 20; i++) {           // 等体检回填
             await sleep(300);
@@ -126,7 +135,13 @@ function createWindow() {
           const okMeta = document.querySelector('.file-row .meta.ok');
           if (!okMeta) return 'scan-not-applied';
           if (!okMeta.textContent.includes('表头第3行')) return 'meta=' + okMeta.textContent;
-          const ok = await T.startMerge(${out});    // 真实合并
+          return 'PHASE1-OK';
+        })()`);
+        if (r1 !== 'PHASE1-OK') { console.log('UITEST-FAIL ' + r1); app.exit(1); return; }
+        await shot('_uitest_1_filelist.png');
+        const r2 = await win.webContents.executeJavaScript(`(async () => {
+          const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+          const ok = await window.__emTest.startMerge(${out});   // 真实合并
           if (!ok) return 'merge-failed';
           for (let i = 0; i < 60; i++) {
             await sleep(500);
@@ -135,6 +150,8 @@ function createWindow() {
           if (document.querySelector('#done-pane').classList.contains('hidden')) return 'no-done-pane';
           return 'DONE:' + document.querySelector('#done-stats').textContent;
         })()`);
+        await shot('_uitest_2_done.png');
+        const r = r2;
         const pass = typeof r === 'string' && r.startsWith('DONE:') && r.includes('写入');
         if (errors.length) {
           console.log('UITEST-FAIL(控制台错误): ' + errors.join(' | '));

@@ -29,3 +29,6 @@ logs/
 # 打包与本地实验
 *.specbak/
 tmp/
+
+# UI测试产物
+_uitest_*
