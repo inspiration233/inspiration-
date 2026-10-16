@@ -29,6 +29,7 @@
         </span>
       </div>
       <div class="rows" id="file-rows"></div>
+      <div id="mode-reco" style="font-size:12px;color:var(--accent);padding:4px 2px"></div>
     </div>
   </section>
 
@@ -39,7 +40,8 @@
       <div class="set-group">
         <div class="set-label">合并模式</div>
         <div class="radio-cards" id="opt-mode">
-          <div class="radio-card sel" data-v="single"><div class="t">一张总表</div><div class="d">多文件按行追加</div></div>
+          <div class="radio-card sel" data-v="auto"><div class="t">自动</div><div class="d">按内容推荐·见体检</div></div>
+          <div class="radio-card" data-v="single"><div class="t">一张总表</div><div class="d">多文件按行追加</div></div>
           <div class="radio-card" data-v="workbook"><div class="t">一个工作簿</div><div class="d">每表独立成页</div></div>
           <div class="radio-card" data-v="sheets"><div class="t">文件内汇总</div><div class="d">多Sheet→一张表</div></div>
           <div class="radio-card" data-v="group"><div class="t">同名Sheet分组</div><div class="d">按Sheet名合并</div></div>
@@ -58,6 +60,14 @@
           <div class="radio-card sel" data-v="fidelity"><div class="t">原生保真</div><div class="d">公式/下拉/样式完整还原</div></div>
           <div class="radio-card" data-v="fast"><div class="t">高速模式</div><div class="d">大数据量·输出缓存值</div></div>
         </div>
+      </div>
+      <div class="set-group">
+        <div class="set-label">合并形态（复杂表前置区处理）</div>
+        <select id="opt-shape" style="width:100%">
+          <option value="auto">自动（按前置区共性推荐）</option>
+          <option value="stack">数据汇总（前置区共性取舍）</option>
+          <option value="append">完整表拼接（保形·前置区全保留）</option>
+        </select>
       </div>
       <div class="set-group two">
         <div>

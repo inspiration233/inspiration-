@@ -93,35 +93,68 @@ def _coord(cell_ref: str):
     return col, digits
 
 
-def detect_orientation(window_rows, window=HEADER_SCAN_WINDOW):
-    """方向探测：vertical = 字段在首行(常规)，horizontal = 字段在首列(转置表)。
+def _seq_labels(row):
+    """一行中"序列标签"(类别1/1月/2024年/Q1)的数字序列。
 
-    小表两个方向的"表头行"可能都得满分（唯一文本 vs 唯一文本），打分器分不出。
-    决定性信号是**列类型纯度**：常规表的列同质（一列全是姓名/一列全是金额），
-    转置表按纵向读时每列文本/日期/数字混杂；转置后反而各"列"纯。
-    方向得分 = 0.5*表头得分 + 0.5*列纯度；横向显著更优时判横向（保守阈值）。
+    只认: 数字≤2位(类别1-99/1月/第1季), 或四位年份带"年"(2024年);
+    长编号(DD1001)与流水号是数据不是表头, 不触发。
+    """
+    import re as _re
+    nums = []
+    for v in row:
+        if isinstance(v, str):
+            s = v.strip()
+            m = _re.match(r"^(.{0,6}?)(\d{1,4})(年|月|季度|季|期)?$",
+                          s.replace("第", "").replace("Q", ""))
+            if not m or len(s) > 10:
+                continue
+            n = int(m.group(2))
+            suffix = m.group(3) or ""
+            if len(m.group(2)) <= 2 or (len(m.group(2)) == 4
+                                        and suffix == "年" and 1900 <= n <= 2100):
+                nums.append(n)
+    inc = sum(1 for a, b in zip(nums, nums[1:]) if b == a + 1)
+    return inc >= 2
+
+
+def detect_orientation(window_rows, window=HEADER_SCAN_WINDOW):
+    """多信号方向检测，返回 (orientation, confident)。
+
+    信号(加权): 序列标签方向(强,+2) — "类别1/1月/2024年"这类带序标签出现在某行
+    → 该行是表头(纵向); 出现在某列 → 横向。列类型纯度(+1)与数字分布(+1)为辅。
+    净分 |net| >= 2 → confident=True 自动定方向; 否则默认纵向 + 低置信(交人工)。
+    纯占位数据(全XX)下序列标签是唯一可用信号。
     """
     if not window_rows:
-        return "vertical"
+        return "vertical", True
     width = max((len(r) for r in window_rows), default=0)
     nonempty_rows = sum(1 for r in window_rows
                         if any(v not in (None, "") for v in r))
     if width < 3 or nonempty_rows < 3:
-        return "vertical"
+        return "vertical", True
 
+    t = transpose_window(window_rows)
+    net = 0
+    # 1) 序列标签(强)
+    row_seq = any(_seq_labels(r) for r in window_rows[:window])
+    col_seq = any(_seq_labels(c) for c in t[:window])
+    if row_seq and not col_seq:
+        net += 2
+    elif col_seq and not row_seq:
+        net -= 2
+    # 2) 列类型纯度
     def _kind(v):
         if v in (None, ""):
             return None
         import datetime as _dt
         if isinstance(v, (_dt.datetime, _dt.date)):
-            return "date"       # 日期独立成类: 混入文本会稀释列纯度区分度
+            return "date"
         return "num" if is_numberlike(v) else "text"
 
-    def _orientation_score(matrix):
-        best = max(detect_header_row(matrix, window).scores.values(), default=0.0)
+    def _purity(matrix):
+        # 平均列纯度(最佳列会掩盖混合列, 平均才能区分方向)
         header_row = detect_header_row(matrix, window).header_row or 1
-        # 表头行以下区域的列类型纯度
-        purity_sum, purity_n = 0.0, 0
+        s, n = 0.0, 0
         for c in range(max(len(r) for r in matrix)):
             kinds = {}
             for row in matrix[header_row:header_row + 8]:
@@ -131,17 +164,37 @@ def detect_orientation(window_rows, window=HEADER_SCAN_WINDOW):
                 if k:
                     kinds[k] = kinds.get(k, 0) + 1
             total = sum(kinds.values())
-            if total >= 2:
-                purity_sum += max(kinds.values()) / total
-                purity_n += 1
-        purity = purity_sum / purity_n if purity_n else 0.0
-        return 0.5 * best + 0.5 * purity
+            if total >= 3:
+                s += max(kinds.values()) / total
+                n += 1
+        return s / n if n else 0.0
 
-    v_score = _orientation_score(window_rows)
-    h_score = _orientation_score(transpose_window(window_rows))
-    if h_score >= 0.8 and h_score - v_score > 0.1:
-        return "horizontal"
-    return "vertical"
+    pv, ph = _purity(window_rows), _purity(t)
+    if pv - ph > 0.15:
+        net += 1
+    elif ph - pv > 0.15:
+        net -= 1
+    # 3) 数字分布(表头行之下数字沿列→纵向; 沿行→横向)
+    def _num_dir(matrix):
+        h = detect_header_row(matrix, window).header_row or 1
+        col_num = 0
+        for c in range(max(len(r) for r in matrix)):
+            vals = [matrix[r][c] for r in range(h, min(len(matrix), h + 8))
+                    if c < len(matrix[r])]
+            if sum(1 for v in vals if isinstance(v, (int, float))) >= max(2, len(vals) // 2):
+                col_num += 1
+        return col_num
+
+    if _num_dir(window_rows) > _num_dir(t):
+        net += 1
+    elif _num_dir(t) > _num_dir(window_rows):
+        net -= 1
+
+    if net >= 2:
+        return "vertical", True
+    if net <= -2:
+        return "horizontal", True
+    return "vertical", False
 
 
 def transpose_window(window_rows):

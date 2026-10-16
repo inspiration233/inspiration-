@@ -210,7 +210,8 @@ class FidelityBook:
 # ================================================================ 组合并(保真)
 
 def merge_group_fidelity(book, group, options, template_index, report,
-                         progress=None, cancel=None, base_name="总表"):
+                         progress=None, cancel=None, base_name="总表",
+                         shape="stack"):
     totals = report["totals"]
     template = group[template_index]
     if options.mode == "workbook":
@@ -242,13 +243,76 @@ def merge_group_fidelity(book, group, options, template_index, report,
     ws = None
     page_no = 0
 
-    def _new_page():
+    def _write_pre(ws, start_row, cont, sst_src):
+        """写出前置区(值+样式+合并平移), 返回占用行数。"""
+        if sst_src.header_row <= 1:
+            return 0
+        if not cont.full:
+            for r_i, prow in enumerate(sst_src.pre_rows):
+                for c_i, v in enumerate(prow, start=1):
+                    if v is not None:
+                        ws.cell(row=start_row + r_i, column=c_i, value=v)
+            return len(sst_src.pre_rows)
+        rows = [[c for c in r] for r in cont.sheet().iter_rows(
+            min_row=1, max_row=sst_src.header_row - 1)]
+        for r_idx, r in enumerate(rows, start=1):
+            for c_idx, cell in enumerate(r, start=1):
+                out = ws.cell(row=start_row + r_idx - 1, column=c_idx)
+                v = cell.value
+                if v is not None:
+                    out.value = v
+                if cell.has_style:
+                    _copy_cell_style(out, cell)
+                if cell.comment:
+                    out.comment = Comment(cell.comment.text, cell.comment.author)
+        for mg in getattr(sst_src, "all_merges", []):
+            if mg.max_row < sst_src.header_row:
+                try:
+                    ws.merge_cells(start_column=mg.min_col,
+                                   start_row=mg.min_row + start_row - 1,
+                                   end_column=mg.max_col,
+                                   end_row=mg.max_row + start_row - 1)
+                except Exception:
+                    pass
+        return len(rows)
+
+    def _write_header_at(ws, at_row, src_i):
+        """把 src_i 自己的表头块写到 at_row（拼接式逐源表头）。"""
+        sst_i = src_i.structure
+        hcells = src_i.header_cells()
+        for r_idx, row in enumerate(hcells, start=1):
+            for c_idx, cell in enumerate(row, start=1):
+                out = ws.cell(row=at_row + r_idx - 1, column=c_idx)
+                v = getattr(cell, "value", None)
+                if v is not None:
+                    out.value = v
+                if getattr(cell, "has_style", False):
+                    _copy_cell_style(out, cell)
+                cm = getattr(cell, "comment", None)
+                if cm:
+                    out.comment = Comment(cm.text, cm.author)
+            for j, text in enumerate(extra_texts):
+                if r_idx == 1:
+                    ws.cell(row=at_row + r_idx - 1, column=len(tkeys) + 1 + j,
+                            value=text)
+        shift = sst_i.header_row - 1
+        for mg in sst_i.merges:
+            try:
+                ws.merge_cells(start_column=mg.min_col, start_row=mg.min_row - shift + at_row - 1,
+                               end_column=mg.max_col,
+                               end_row=mg.max_row - shift + at_row - 1)
+            except Exception:
+                pass
+
+    def _new_page(write_pre_from=None):
         nonlocal ws, page_no
         name = base_name if page_no == 0 else f"{base_name}({page_no + 1})"
         ws = book.page(name)
         page_no += 1
         r0 = 0
-        if title_row:
+        if write_pre_from is not None and st.header_row > 1:
+            r0 = _write_pre(ws, 1, write_pre_from, st)   # 前置区已含标题行
+        elif title_row:
             ws.cell(row=1, column=1, value=title_row)
             if total_width > 1:
                 ws.merge_cells(start_column=1, start_row=1,
@@ -313,7 +377,14 @@ def merge_group_fidelity(book, group, options, template_index, report,
             ws.column_dimensions[get_column_letter(c)].width = w
         return ws
 
-    ws = _new_page()
+    # 汇总式: 多源且前置区逐行全同 → 保留一份(模板前置区)在表头上方
+    pre_identical = (len(src_list) > 1 and shape == "stack"
+                     and all(s.structure.pre_rows == template.structure.pre_rows
+                             for s in src_list)
+                     and bool(template.structure.pre_rows))
+    first_pre = t_content if (shape == "append" or pre_identical) else None
+    ws = _new_page(write_pre_from=first_pre)
+    block_base = ws.max_row                     # 前置区(如有)+表头 已占的行数
 
     # ---------------- 数据行（两遍：先完整行映射，公式引用才可翻译） ----------------
     for fi, (src, mapping) in enumerate(zip(src_list, maps)):
@@ -371,13 +442,20 @@ def merge_group_fidelity(book, group, options, template_index, report,
         if cancel and cancel():
             raise KeyboardInterrupt("cancelled")
         row_map = {}
-        cursor = height + rows_total
+        if shape == "append" and fi > 0:
+            # 拼接式: 空行 + 该源前置区 + 该源表头 成块
+            at = ws.max_row + 2
+            if sst.header_row > 1:
+                at += _write_pre(ws, at, cont, sst)
+            _write_header_at(ws, at, src)
+        cursor = (ws.max_row if shape == "append" else block_base) + rows_total
         for row_no, _f, _v in keep:
             if ws.max_row >= XLSX_MAX_ROWS - 2:
                 _new_page()
                 report["warnings"].append(
                     f"「{base_name}」超出单页行数上限，已自动续写新页")
-                cursor = height
+                block_base = ws.max_row
+                cursor = block_base
             cursor += 1
             row_map[row_no] = (page_no, cursor)
 

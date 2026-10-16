@@ -46,6 +46,8 @@ class SheetStructure:
     all_merges: list = field(default_factory=list)   # 全表合并范围（数据区还原用）
     col_widths: dict = field(default_factory=dict)   # 列宽（保留样式复制用）
     orientation: str = "vertical"         # vertical 常规 | horizontal 横向表(转置读取)
+    orientation_confident: bool = True    # 方向检测置信度(低→体检提示人工确认)
+    pre_rows: list = field(default_factory=list)       # 表头前置区行(值, 共性检测/拼接用)
     title: str = None                    # 识别到的标题文本（不进总表，进报告）
     low_confidence: bool = False
     warnings: list = field(default_factory=list)
@@ -186,7 +188,7 @@ class _XlsxReader:
     def sheets(self):
         return [(ws.title, ws.sheet_state == "visible") for ws in self.wb.worksheets]
 
-    def build_structure(self, sheet_name, force=0):
+    def build_structure(self, sheet_name, force=0, override=None):
         ws = self.wb[sheet_name]
         window = []
         for row in ws.iter_rows(min_row=1, max_row=XLSX_WINDOW, values_only=True):
@@ -197,12 +199,13 @@ class _XlsxReader:
             return SheetStructure(sheet_name, 0, 0, [], [], empty=True)
 
         ranges = xlsx_merge_ranges(self.path, sheet_name)
-        orientation = "vertical"
-        if force == 0 and window and (ws.max_row or 0) <= 20000 \
-                and (ws.max_column or 0) <= 500:
-            orientation = recognize.detect_orientation(window)
+        orientation, confident = "vertical", True
+        if override in ("vertical", "horizontal"):
+            orientation, confident = override, True      # 人工指定优先
+        elif force == 0 and window and (ws.max_row or 0) <= 20000 and (ws.max_column or 0) <= 500:
+            orientation, confident = recognize.detect_orientation(window)
         if orientation == "horizontal":
-            return self._structure_transposed(ws, sheet_name, ranges)
+            return self._structure_transposed(ws, sheet_name, ranges, confident)
         if force > 0:
             det = recognize.detect_header_row(window)
             header_row = force
@@ -221,6 +224,8 @@ class _XlsxReader:
                     and mg.max_row <= header_row + height - 1],
             all_merges=ranges,
             col_widths=xlsx_column_widths(self.path, sheet_name),
+            orientation_confident=confident,
+            pre_rows=[list(r) for r in window[:header_row - 1]],
             title=recognize.detect_title(window, header_row, ranges),
             low_confidence=det.low_confidence,
         )
@@ -229,9 +234,11 @@ class _XlsxReader:
             st.warnings.append(warn)
         if det.header_row == 0:
             st.warnings.append("未探测到表头，已按第 1 行处理（可手动指定）")
+        if not confident:
+            st.warnings.append("方向待确认（疑似交叉表），可在体检中手动切换纵向/横向")
         return st
 
-    def _structure_transposed(self, ws, sheet_name, ranges):
+    def _structure_transposed(self, ws, sheet_name, ranges, confident=True):
         """横向表：在转置视图（行=原列）上跑同一套识别逻辑。"""
         buf = [list(row) for row in ws.iter_rows(values_only=True)]
         ncols = max((len(r) for r in buf), default=0)
@@ -245,7 +252,8 @@ class _XlsxReader:
         keys = recognize.flatten_keys(tv, header_row, height, ranges)
         st = SheetStructure(
             sheet_name=sheet_name, header_row=header_row, height=height,
-            keys=keys, orientation="horizontal",
+            keys=keys, orientation="horizontal", orientation_confident=confident,
+            pre_rows=[list(r) for r in tv[:header_row - 1]],
             merges=[mg for mg in ranges if mg.min_row >= header_row
                     and mg.max_row <= header_row + height - 1],
             all_merges=ranges)
@@ -325,7 +333,7 @@ class _XlsReader:
             return bool(cell.value)
         return None
 
-    def build_structure(self, sheet_name, force=0):
+    def build_structure(self, sheet_name, force=0, override=None):
         sheet = self.book.sheet_by_name(sheet_name)
         if sheet.nrows == 0:
             return SheetStructure(sheet_name, 0, 0, [], [], empty=True)
@@ -348,6 +356,7 @@ class _XlsReader:
             sheet_name, header_row, height, keys,
             [mg for mg in ranges if mg.min_row >= header_row and mg.max_row <= header_row + height - 1],
             all_merges=ranges, col_widths=widths,
+            pre_rows=[list(r) for r in window[:header_row - 1]],
             title=recognize.detect_title(window, header_row, ranges),
             low_confidence=det.low_confidence,
             warnings=(["未探测到表头，已按第 1 行处理（可手动指定）"] if det.header_row == 0 else []),
@@ -409,13 +418,15 @@ class _CsvReader:
     def _reopen(self):
         return csv.reader(self.path.open("r", encoding=self.encoding, newline=""))
 
-    def build_structure(self, sheet_name, force=0):
+    def build_structure(self, sheet_name, force=0, override=None):
         window = [r for r in self.window]  # 前导空行参与窗口但计分为 0
         if not any(recognize._row_nonempty(r) for r in window):
             return SheetStructure(sheet_name, 0, 0, [], [], empty=True)
-        orientation = "vertical"
-        if force == 0:
-            orientation = recognize.detect_orientation(window)
+        orientation, confident = "vertical", True
+        if override in ("vertical", "horizontal"):
+            orientation, confident = override, True
+        elif force == 0:
+            orientation, confident = recognize.detect_orientation(window)
         if orientation == "horizontal":
             rows = [r for r in self._reopen()]
             ncols = max((len(r) for r in rows), default=0)
@@ -426,12 +437,15 @@ class _CsvReader:
             keys = recognize.flatten_keys(tv, header_row, 1, [])
             return SheetStructure(sheet_name, header_row, 1, keys, [],
                                   orientation="horizontal",
+                                  orientation_confident=confident,
+                                  pre_rows=[list(r) for r in tv[:header_row - 1]],
                                   low_confidence=det.low_confidence)
         det = recognize.detect_header_row(window)
         header_row = force if force > 0 else (det.header_row or 1)
         keys = recognize.flatten_keys(window, header_row, 1, [])
         return SheetStructure(
             sheet_name, header_row, 1, keys, [],
+            pre_rows=[list(r) for r in window[:header_row - 1]],
             title=recognize.detect_title(window, header_row, []),
             low_confidence=det.low_confidence,
             warnings=(["未探测到表头，已按第 1 行处理（可手动指定）"] if det.header_row == 0 else []),
@@ -476,7 +490,7 @@ def open_reader(path):
     return _CsvReader(path)
 
 
-def list_tables(path, include_hidden=False, force_header_row=0):
+def list_tables(path, include_hidden=False, force_header_row=0, orientation_override=None):
     """打开文件 → [(TableSource, 已跳过原因?)]。损坏文件抛 FileError 由上层记报告。"""
     reader = open_reader(path)
     out = []
@@ -484,7 +498,7 @@ def list_tables(path, include_hidden=False, force_header_row=0):
         if not visible and not include_hidden:
             out.append((None, f"隐藏 Sheet「{name}」已跳过"))
             continue
-        st = reader.build_structure(name, force_header_row)
+        st = reader.build_structure(name, force_header_row, orientation_override)
         src = TableSource(Path(path), name, display_table(Path(path), name),
                           st, reader)
         out.append((src, None))

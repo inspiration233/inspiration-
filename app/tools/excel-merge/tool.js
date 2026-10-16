@@ -10,7 +10,8 @@ window.toolMount = (root, ctx) => {
 
   // ---------------- 设置（记忆上次） ----------------
   const DEF = {
-    mode: 'single', align: 'loose', style: 'fidelity', templateIndex: 0,
+    mode: 'auto', align: 'loose', style: 'fidelity', templateIndex: 0,
+    shape: 'auto', orient: {},
     headerAuto: '0', headerRow: 1, removeSummary: true, keywords: ['合计', '小计', '总计', '汇总', '累计'],
     source: false, hidden: false, title: false, outDir: '',
     stripSerial: true, renumberSerial: true,
@@ -137,6 +138,17 @@ window.toolMount = (root, ctx) => {
     refreshTemplateSelect();
   }
 
+  root.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-orient]');
+    if (!btn) return;
+    const display = btn.dataset.orient;
+    const cur = state.files.flatMap((f) => f.detections || []).find((d) => d.display === display);
+    if (!cur) return;
+    cfg.orient[display] = cur.orientation === 'horizontal' ? 'vertical' : 'horizontal';
+    saveCfg();
+    runScan();
+  });
+
   function toggleDetail(row, f) {
     const next = row.nextElementSibling;
     if (next?.classList.contains('detail')) { next.remove(); return; }
@@ -146,7 +158,8 @@ window.toolMount = (root, ctx) => {
     div.className = 'detail';
     div.innerHTML = f.detections.map((d) => `
       <div class="line"><b>${d.display}</b></div>
-      <div class="line">排列: ${d.orientation === 'horizontal' ? '横向表（已自动转正）' : '纵向'} · 表头第 ${d.header_row} 行 · ${d.height} 行高 · ${d.columns.length} 列${d.title ? ` · 标题(不入表): ${d.title}` : ''}</div>
+      <div class="line">排列: ${d.orientation === 'horizontal' ? '横向表（已自动转正）' : '纵向'} · 表头第 ${d.header_row} 行 · ${d.height} 行高 · ${d.columns.length} 列${d.title ? ` · 标题: ${d.title}` : ''}</div>
+      <div class="line"><button class="ghost" style="font-size:11px;padding:2px 8px" data-orient="${d.display}">切换为${d.orientation === 'horizontal' ? '纵向' : '横向'}</button>${d.orientation_confident === false ? ' <span class="w">⚠ 方向置信度低，建议核对</span>' : ''}</div>
       ${d.low_confidence ? '<div class="line w">⚠ 两个候选表头行得分接近，请核对</div>' : ''}
       ${(d.warnings || []).map((w) => `<div class="line w">⚠ ${w}</div>`).join('')}
       <div class="line">列: ${d.columns.join(' | ')}</div>`).join('<hr style="border:none;border-top:1px solid var(--hairline-2);margin:6px 0">');
@@ -171,6 +184,13 @@ window.toolMount = (root, ctx) => {
     if (!paths.length) return;
     try {
       const reply = await toolbox.scan({ paths, options: engineOptions() });
+      if (reply.evt !== 'error') {
+        state.recoMode = recommendMode(reply.report);
+        const el = root.querySelector('#mode-reco');
+        if (el) el.textContent = cfg.mode === 'auto'
+          ? `模式建议：${({ single: '一张总表', workbook: '一个工作簿', sheets: '文件内汇总', group: '同名Sheet分组' })[state.recoMode.mode] || ''}（${state.recoMode.why}）`
+          : '';
+      }
       if (reply.evt === 'error') {
         tbToast(`体检失败：${reply.msg}`, 'error');
         return;
@@ -214,6 +234,8 @@ window.toolMount = (root, ctx) => {
     });
   };
   bindCards('opt-mode', 'mode');
+  $('opt-shape').value = cfg.shape;
+  $('opt-shape').onchange = (e) => { cfg.shape = e.target.value; saveCfg(); };
   bindCards('opt-align', 'align');
   bindCards('opt-style', 'style');
 
@@ -282,9 +304,37 @@ window.toolMount = (root, ctx) => {
   $('btn-settings-toggle').onclick = () => { toggleSettings(); $('settings').scrollIntoView({ behavior: 'smooth' }); };
 
   // ---------------- 合并 ----------------
-  function engineOptions() {
+  // 模式自动推荐(基于体检报告)
+  function recommendMode(report) {
+    const dets = report.header_detections || [];
+    const files = (report.files || []).filter((f) => f.status === 'ok');
+    if (files.length === 1 && dets.length > 1)
+      return { mode: 'sheets', why: '单文件多 Sheet' };
+    if (files.length > 1) {
+      const byFile = {};
+      dets.forEach((d) => {
+        const f = d.display.split('/')[0];
+        (byFile[f] = byFile[f] || []).push(d.sheet);
+      });
+      const names = Object.keys(byFile);
+      const first = byFile[names[0]] || [];
+      const same = first.length > 1 && names.every(
+        (n) => (byFile[n] || []).length === first.length
+          && first.every((s) => byFile[n].includes(s)));
+      if (same) return { mode: 'group', why: `${names.length} 个文件都有同名 Sheet「${first.slice(0, 2).join('」「')}」` };
+      return { mode: 'single', why: '多文件汇总' };
+    }
+    return { mode: 'single', why: '默认' };
+  }
+
+  function engineOptions(report) {
+    let mode = cfg.mode;
+    if (mode === 'auto' && report) mode = recommendMode(report).mode;
+    if (mode === 'auto') mode = 'single';
     return {
-      mode: cfg.mode, align: cfg.align, style: cfg.style,
+      mode, align: cfg.align, style: cfg.style,
+      merge_shape: cfg.shape,
+      orientation_overrides: cfg.orient,
       template_index: Number(cfg.templateIndex) || 0,
       remove_summary: cfg.removeSummary, summary_keywords: cfg.keywords,
       strip_serial_rows: cfg.stripSerial, renumber_serial: cfg.renumberSerial,

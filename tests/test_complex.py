@@ -24,16 +24,16 @@ def test_data_area_merge_restoration(out_path):
     r = merge([str(F)], out_path, Options(mode="workbook", style="preserve"))
     assert r["totals"]["data_merges_preserved"] >= 19
     ws = load(out_path)["Sheet2"]
-    assert ws.max_row == 18                                    # 2表头 + 16数据
+    # V2.1 拼接式(单源组): 前置区3行(标题/说明/盖章) + 2表头 + 16数据 = 21
+    assert ws.max_row == 21
+    assert ws["A1"].value == "统计表"                           # 前置区完整保留
     merged = {str(x) for x in ws.merged_cells.ranges}
-    # 表头套娃结构
-    for ref in ("A1:A2", "F1:G1", "H1:S1"):
+    for ref in ("A1:S1", "A2:S2", "A4:A5", "F4:G4", "H4:S4"):  # 前置区+表头合并
         assert ref in merged, ref
-    # 数据区合并: 填报单位整块 / 分组列 / 年份两行一组
-    for ref in ("B3:B18", "C3:C18", "F3:F6", "F7:F11", "I3:I4", "I5:I6"):
+    for ref in ("B6:B21", "C6:C21", "F6:F9", "F10:F14", "I6:I7", "I8:I9"):
         assert ref in merged, ref
-    # V2.0: 公式保留并平移(数据行6→3, 位移-3)
-    assert str(ws["C3"].value).startswith("=") and "G7" in str(ws["C3"].value)
+    # V2.1: 前置区保留后数据行恒等 → 公式原样(引用不变, 原生体验)
+    assert str(ws["C6"].value).startswith("=") and "G10" in str(ws["C6"].value)
     # 列宽复制
     assert (ws.column_dimensions["H"].width or 0) > 0
 

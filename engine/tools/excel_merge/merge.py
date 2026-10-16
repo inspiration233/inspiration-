@@ -31,6 +31,8 @@ class Options:
     align: str = "loose"                    # strict | loose
     style: str = "fidelity"                 # fidelity(原生保真,默认) | fast(高速流式)
     auto_group: bool = True                 # 异构表自动分组到不同 Sheet
+    merge_shape: str = "auto"               # auto | stack(数据汇总) | append(完整表拼接)
+    orientation_overrides: dict = field(default_factory=dict)  # {display: vertical/horizontal}
     template_index: int = 0                 # 表头模板 = 第几个源（0 起）
     remove_summary: bool = True
     summary_keywords: tuple = DEFAULT_SUMMARY_KEYWORDS
@@ -81,6 +83,7 @@ def _sheet_record(src):
     st = src.structure
     return {"display": src.display, "sheet": st.sheet_name,
             "orientation": getattr(st, "orientation", "vertical"),
+            "orientation_confident": getattr(st, "orientation_confident", True),
             "header_row": st.header_row, "height": st.height,
             "columns": list(st.keys), "title": st.title,
             "low_confidence": st.low_confidence, "warnings": list(st.warnings)}
@@ -104,11 +107,16 @@ def scan(paths, options=None):
                 report["totals"]["files_failed"] += 1
                 continue
             report["totals"]["files_ok"] += 1
+            ov = options.orientation_overrides or {}
             for src, skip_reason in tables:
                 if src is None:
                     entry.sheets.append({"sheet": skip_reason, "skipped": True})
                     report["totals"]["hidden_sheets_skipped"] += 1
                     continue
+                if src.display in ov:            # 手动指定方向 → 按覆盖重建结构
+                    src.structure = reader.build_structure(
+                        src.structure.sheet_name, options.force_header_row,
+                        ov[src.display])
                 entry.sheets.append(_sheet_record(src))
                 report["header_detections"].append(_sheet_record(src))
     finally:
@@ -218,9 +226,21 @@ def merge(paths, out_path, options=None, progress=None, cancel=None):
                 else:
                     name = b[0].path.stem                 # 跨文件的组用文件名
                 groups.append((name, b))
+        # 合并形态: 单源组=拼接(完整还原); 多源组按前置区共性推荐(全同→汇总, 有差异→拼接保形)
+        def _shape_of(b):
+            if options.merge_shape in ("stack", "append"):
+                return options.merge_shape
+            if len(b) == 1:
+                return "append"                    # 单源组: 完整还原(含前置区)
+            # 多源: 所有源都有复杂前置区(≥2行)才拼接保形; 明细类(前置区不齐/无)保持汇总
+            if all(len(s.structure.pre_rows) >= 2 for s in b):
+                return "append"
+            return "stack"
+
+        groups = [(n, b, _shape_of(b)) for (n, b) in groups]
         totals["group_count"] = len(groups)
-        report["groups"] = [{"sheet": n, "sources": [s.display for s in b]}
-                            for n, b in groups]
+        report["groups"] = [{"sheet": n, "sources": [s.display for s in b],
+                             "shape": sh} for n, b, sh in groups]
         if len(groups) > 1:
             report["warnings"].append(
                 f"检测到 {len(groups)} 种不同表结构，已自动分组到不同 Sheet（详见报告）")
@@ -230,9 +250,10 @@ def merge(paths, out_path, options=None, progress=None, cancel=None):
             from . import fidelity as fid
             book = fid.FidelityBook(out_path)
             try:
-                for name, grp in groups:
+                for name, grp, shape in groups:
                     fid.merge_group_fidelity(book, grp, options, 0, report,
-                                             progress, cancel, base_name=name)
+                                             progress, cancel, base_name=name,
+                                             shape=shape)
                 book.save()
             except (Cancelled, KeyboardInterrupt):
                 try:
@@ -251,7 +272,7 @@ def merge(paths, out_path, options=None, progress=None, cancel=None):
         else:
             book = OutputBook(out_path, "fast")
             try:
-                for name, group in groups:
+                for name, group, _shape in groups:
                     template_index = min(options.template_index, len(group) - 1)
                     _merge_group(book, group, options, template_index,
                                  report, progress, cancel, base_name=name)

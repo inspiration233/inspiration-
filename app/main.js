@@ -144,7 +144,7 @@ function createWindow() {
           if (!okMeta.textContent.includes('表头第3行')) return 'meta=' + okMeta.textContent;
           // 文件夹展开（"选择文件夹"按钮同路径）：场景A 目录应扫出 6 个表格文件
           const exp = await window.toolbox.expandPaths([${pDir}]);
-          if (exp.files.length !== 7) return 'folder-expand=' + exp.files.length;
+          if (exp.files.length !== 8) return 'folder-expand=' + exp.files.length;
           // 抽屉展开：无遮挡（action-bar 不得压住抽屉内容）、无截断
           document.querySelector('#settings-head').click();
           await sleep(500);

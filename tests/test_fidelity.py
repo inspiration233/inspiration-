@@ -35,10 +35,11 @@ def test_formula_translation_complex_table(out_path):
     f = scenario("场景A_多文件纵向合并") / "部门F_复杂统计表.xlsx"
     r = merge([str(f)], out_path, Options(mode="workbook", style="fidelity"))
     ws = load(out_path)["Sheet2"]
-    c3 = str(ws["C3"].value)
-    assert c3.startswith("=")
-    assert "G7" in c3 and "G3" in c3                       # 行位移 -3 (数据行6→3)
-    assert r["totals"]["formulas_to_value"] == 0           # 块内引用全部平移成功
+    c6 = str(ws["C6"].value)
+    assert c6.startswith("=")
+    # V2.1 前置区保留 → 数据行位置恒等 → 公式引用原样(最高保真)
+    assert "G10" in c6
+    assert r["totals"]["formulas_to_value"] == 0
 
 
 def test_heterogeneous_grouping(out_path):
@@ -51,8 +52,9 @@ def test_heterogeneous_grouping(out_path):
     n_main = len(rows_of(wb["总表"]))
     assert n_main == 17 + 17                               # 部门A + 部门F/销售明细
     ws2 = wb["部门F_复杂统计表"]
+    assert ws2["A1"].value == "统计表"                      # V2.1: 前置区保留
     merged = {str(x) for x in ws2.merged_cells.ranges}
-    assert "B3:B18" in merged and "H1:S1" in merged        # 套娃结构完整
+    assert "B6:B21" in merged and "H4:S4" in merged        # 套娃结构完整
 
 
 def test_fast_mode_still_works(out_path):
