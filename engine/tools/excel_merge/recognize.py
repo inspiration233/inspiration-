@@ -241,8 +241,16 @@ def detect_header_row(window_rows, window=HEADER_SCAN_WINDOW):
     for i, cells in enumerate(window_rows[:window], start=1):
         s = score_header_row(cells, width)
         if s > 0 and i < len(window_rows):
+            import datetime as _dt
+            ne = _row_nonempty(cells)
+            # 表头行自身: 纯字符串文本占比(datetime/数字不算)
+            str_texts = [v for v in ne if isinstance(v, str)]
+            text_ratio = len(str_texts) / max(len(ne), 1)
+            # 下一行像数据: 数字或日期形态 ≥2 格
+            def _datalike(v):
+                return isinstance(v, (int, float, _dt.datetime, _dt.date))                     or is_numberlike(v)
             nxt = _row_nonempty(window_rows[i])
-            if sum(1 for v in nxt if is_numberlike(v)) >= 2:
+            if text_ratio >= 0.8 and sum(1 for v in nxt if _datalike(v)) >= 2:
                 s += 0.15
         scores[i] = s
     ranked = sorted(((s, -r) for r, s in scores.items() if s > 0), reverse=True)
