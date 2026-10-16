@@ -62,6 +62,10 @@ window.toolMount = (root, ctx) => {
   $('btn-add-more').onclick = () => $('btn-add-files').click();
 
   // ---------------- 文件列表 ----------------
+  const summarize = (dets) => dets
+    .map((d) => (dets.length > 1 ? `${d.sheet}: ` : '') + `表头第${d.header_row}行·${d.columns.length}列`)
+    .join('、');
+
   function addPaths(paths) {
     const okExt = /\.(xlsx|xls|csv)$/i;
     let added = 0, skipped = 0;
@@ -91,7 +95,7 @@ window.toolMount = (root, ctx) => {
       row.style.setProperty('--i', i);
       row.draggable = true;
       const meta = f.status === 'bad' ? `<span class="meta bad">✗ ${f.reason || '无法读取'}</span>`
-        : f.detections ? `<span class="meta ok">✓ ${f.detections.map((d) => d.display.split('/')[0]).join('、')}</span>`
+        : f.detections ? `<span class="meta ok">✓ ${summarize(f.detections)}</span>`
         : '<span class="meta">识别中…</span>';
       const warns = (f.detections || []).some((d) => d.warnings?.length || d.low_confidence);
       row.innerHTML = `
@@ -151,8 +155,16 @@ window.toolMount = (root, ctx) => {
   async function runScan() {
     const paths = state.files.map((f) => f.path);
     if (!paths.length) return;
-    const report = await toolbox.scan({ paths, options: engineOptions() });
-    applyScanReport(report);
+    try {
+      const reply = await toolbox.scan({ paths, options: engineOptions() });
+      if (reply.evt === 'error') {
+        tbToast(`体检失败：${reply.msg}`, 'error');
+        return;
+      }
+      applyScanReport(reply.report);
+    } catch (e) {
+      tbToast(`体检失败：${e}`, 'error');
+    }
   }
 
   function applyScanReport(report) {
@@ -176,11 +188,11 @@ window.toolMount = (root, ctx) => {
   // ---------------- 设置面板 ----------------
   const bindCards = (id, key) => {
     const wrap = $(id);
-    wrap.querySelectorAll('.radio-card').forEach((c) => {
-      if (c.dataset.v === cfg[key]) c.classList.add('sel');
-      wrap.querySelectorAll('.radio-card').forEach((x) => { if (x !== c && x.dataset.v === cfg[key]) x.classList.remove('sel'); });
+    const cards = [...wrap.querySelectorAll('.radio-card')];
+    cards.forEach((c) => c.classList.toggle('sel', c.dataset.v === cfg[key]));
+    cards.forEach((c) => {
       c.onclick = () => {
-        wrap.querySelectorAll('.radio-card').forEach((x) => x.classList.remove('sel'));
+        cards.forEach((x) => x.classList.remove('sel'));
         c.classList.add('sel');
         cfg[key] = c.dataset.v;
         saveCfg();
@@ -194,7 +206,12 @@ window.toolMount = (root, ctx) => {
   const bindSwitch = (id, key, onChange) => {
     const sw = $(id);
     sw.classList.toggle('on', !!cfg[key]);
-    sw.onclick = () => { cfg[key] = !cfg[key]; sw.classList.toggle('on', cfg[key]); saveCfg(); onChange?.(); };
+    const toggle = () => { cfg[key] = !cfg[key]; sw.classList.toggle('on', cfg[key]); saveCfg(); onChange?.(); };
+    sw.onclick = (e) => { e.stopPropagation(); toggle(); };
+    // 整行 label 可点（点文字也能切换）
+    sw.parentElement.addEventListener('click', (e) => {
+      if (e.target !== sw) toggle();
+    });
   };
   bindSwitch('opt-summary', 'removeSummary');
   bindSwitch('opt-source', 'source');
@@ -264,29 +281,44 @@ window.toolMount = (root, ctx) => {
     const stamp = new Date().toISOString().slice(0, 16).replace(/[-:T]/g, '').replace(/(\d{8})(\d{4})/, '$1_$2');
     const out = await toolbox.saveDialog(`合并结果_${stamp}.xlsx`);
     if (!out) return;
+    startMerge(out);
+  };
+
+  async function startMerge(out) {
     state.merging = true;
     showProgress();
     const off = toolbox.onProgress((m) => {
       $('prog-file').textContent = m.current || '-';
       $('prog-count').textContent = `${m.file} / ${m.total}`;
       $('prog-rows').textContent = m.rows ?? 0;
-      $('prog-bar').style.width = `${Math.round(((m.file - 1) / Math.max(m.total, 1)) * 100)}%`;
+      const pct = Math.min(100, Math.round(((m.file || 0) / Math.max(m.total || 1, 1)) * 100));
+      $('prog-bar').style.width = `${pct}%`;
     });
-    const reply = await toolbox.merge({
-      paths: state.files.map((f) => f.path),
-      out,
-      options: engineOptions(),
-    });
-    off();
-    state.merging = false;
-    if (reply.evt === 'error') {
+    try {
+      const reply = await toolbox.merge({
+        paths: state.files.map((f) => f.path),
+        out,
+        options: engineOptions(),
+      });
+      off();
+      state.merging = false;
+      if (reply.evt === 'error') {
+        hideAllPanes();
+        tbToast(`合并失败：${reply.msg}`, 'error');
+        return false;
+      }
+      $('prog-bar').style.width = '100%';
+      await new Promise((r) => setTimeout(r, 250));
+      showDone(reply.report, out);
+      return true;
+    } catch (e) {
+      off();
+      state.merging = false;
       hideAllPanes();
-      tbToast(`合并失败：${reply.msg}`, 'error');
-      return;
+      tbToast(`合并失败：${e}`, 'error');
+      return false;
     }
-    $('prog-bar').style.width = '100%';
-    setTimeout(() => showDone(reply.report, out), 250);
-  };
+  }
 
   $('btn-cancel').onclick = () => $('cancel-zone').classList.toggle('hidden', false);
   $('btn-cancel-no').onclick = () => $('cancel-zone').classList.add('hidden');
@@ -336,5 +368,8 @@ window.toolMount = (root, ctx) => {
   // 初始渲染
   toggleSettings(false);
   refreshList();
+
+  // UI 自动化测试钩子（--uitest 冒烟用；不影响正常使用）
+  window.__emTest = { addPaths, startMerge, state };
 };
-window.toolUnmount = () => {};
+window.toolUnmount = () => { delete window.__emTest; };

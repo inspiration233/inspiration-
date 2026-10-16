@@ -22,8 +22,9 @@
   if (reduceMotion) document.documentElement.classList.add('reduce-motion');
 
   // ---------------- 窗口控制 ----------------
-  document.getElementById('win-close').onclick = () => window.close();
-  // 最小化/最大化走 Electron 需额外 IPC，v0.1 以关闭钮为主（打包版补齐）
+  document.getElementById('win-min').onclick = () => toolbox.winControl('min');
+  document.getElementById('win-max').onclick = () => toolbox.winControl('max');
+  document.getElementById('win-close').onclick = () => toolbox.winControl('close');
 
   // ---------------- toast ----------------
   window.tbToast = (msg, kind = '') => {

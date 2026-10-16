@@ -17,6 +17,8 @@ contextBridge.exposeInMainWorld('toolbox', {
     ipcRenderer.on('engine:progress', h);
     return () => ipcRenderer.removeListener('engine:progress', h);
   },
+  // 窗口控制
+  winControl: (action) => ipcRenderer.send('win:ctl', action),
   // 应用信息
   info: () => ipcRenderer.invoke('app:info'),
 });

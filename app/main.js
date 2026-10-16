@@ -7,6 +7,7 @@ const path = require('path');
 const ROOT = path.resolve(__dirname, '..');            // 仓库根（engine 所在）
 const PYTHON = process.env.TOOLBOX_PYTHON || 'python';
 const IS_SMOKE = process.argv.includes('--smoke');
+const IS_UITEST = process.argv.includes('--uitest');
 
 let win = null;
 let sidecar = null;
@@ -95,6 +96,59 @@ function createWindow() {
   });
   win.loadFile(path.join(__dirname, 'shell', 'index.html'));
   win.once('ready-to-show', () => win.show());
+
+  if (IS_UITEST) {
+    const errors = [];
+    win.webContents.on('console-message', (_e, level, message) => {
+      if (level >= 2 && !/GPU|command_buffer|EGL|ANGLE|GLES/i.test(message)) {
+        errors.push(message);
+      }
+    });
+    const p1 = JSON.stringify(path.join(ROOT, '测试集', '场景E_表头智能识别', '报表_甲.xlsx'));
+    const p2 = JSON.stringify(path.join(ROOT, '测试集', '场景E_表头智能识别', '报表_丙.csv'));
+    const out = JSON.stringify(path.join(ROOT, '_uitest_out.xlsx'));
+    win.webContents.on('did-finish-load', async () => {
+      try {
+        const r = await win.webContents.executeJavaScript(`(async () => {
+          const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+          document.querySelector('.tool-card')?.click();
+          await sleep(700);
+          const T = window.__emTest;
+          if (!T) return 'no-hook';
+          T.addPaths([${p1}, ${p2}]);
+          for (let i = 0; i < 20; i++) {           // 等体检回填
+            await sleep(300);
+            const metas = [...document.querySelectorAll('.file-row .meta')];
+            if (metas.length === 2 && metas.every((m) => !m.textContent.includes('识别中'))) break;
+          }
+          const rows = document.querySelectorAll('.file-row');
+          if (rows.length !== 2) return 'rows=' + rows.length;
+          const okMeta = document.querySelector('.file-row .meta.ok');
+          if (!okMeta) return 'scan-not-applied';
+          if (!okMeta.textContent.includes('表头第3行')) return 'meta=' + okMeta.textContent;
+          const ok = await T.startMerge(${out});    // 真实合并
+          if (!ok) return 'merge-failed';
+          for (let i = 0; i < 60; i++) {
+            await sleep(500);
+            if (!document.querySelector('#done-pane').classList.contains('hidden')) break;
+          }
+          if (document.querySelector('#done-pane').classList.contains('hidden')) return 'no-done-pane';
+          return 'DONE:' + document.querySelector('#done-stats').textContent;
+        })()`);
+        const pass = typeof r === 'string' && r.startsWith('DONE:') && r.includes('写入');
+        if (errors.length) {
+          console.log('UITEST-FAIL(控制台错误): ' + errors.join(' | '));
+          app.exit(1);
+        } else {
+          console.log(pass ? 'UITEST-OK ' + r.slice(5) : 'UITEST-FAIL ' + r);
+          app.exit(pass ? 0 : 1);
+        }
+      } catch (e) {
+        console.log('UITEST-FAIL: ' + e);
+        app.exit(1);
+      }
+    });
+  }
   if (IS_SMOKE) {
     const errors = [];
     win.webContents.on('console-message', (_e, level, message) => {
@@ -163,6 +217,13 @@ ipcMain.on('engine:cancel', () => {
   if (sidecar) sidecar.stdin.write('{"cmd":"cancel"}\n');
 });
 ipcMain.handle('open:show', (_e, p) => shellOs.showItemInFolder(p));
+ipcMain.on('win:ctl', (_e, action) => {
+  if (!win) return;
+  if (action === 'min') win.minimize();
+  else if (action === 'max') win.isMaximized() ? win.unmaximize() : win.maximize();
+  else if (action === 'close') win.close();
+});
+
 ipcMain.handle('app:info', () => ({
   appVersion: app.getVersion(),
   platform: process.platform,
