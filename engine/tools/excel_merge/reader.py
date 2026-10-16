@@ -43,6 +43,8 @@ class SheetStructure:
     height: int                          # 表头区行数
     keys: list                           # 展平内部对齐键
     merges: list                         # 表头区内原始 MergeRange（输出模板用）
+    all_merges: list = field(default_factory=list)   # 全表合并范围（数据区还原用）
+    col_widths: dict = field(default_factory=dict)   # 列宽（保留样式复制用）
     title: str = None                    # 识别到的标题文本（不进总表，进报告）
     low_confidence: bool = False
     warnings: list = field(default_factory=list)
@@ -85,6 +87,7 @@ def detect_csv_encoding(path):
 # --------------------------------------------------------------- xlsx 合并范围（XML 流式）
 
 _MERGE_RE = re.compile(rb'<mergeCell ref="([A-Z0-9:]+)"\s*/>')
+_COL_RE = re.compile(rb'<col\s([^>]*?)/>')
 
 
 def _sheet_xml_paths(zf):
@@ -114,6 +117,35 @@ def _sheet_xml_paths(zf):
             target = "xl/" + target
         out[name] = target
     return out
+
+
+def xlsx_column_widths(path, sheet_name):
+    """流式解析 <cols> 块（位于 sheetData 之前，扫描很早结束）：自定义列宽。"""
+    with zipfile.ZipFile(path) as zf:
+        target = _sheet_xml_paths(zf).get(sheet_name)
+        if not target:
+            return {}
+        widths = {}
+        carry = b""
+        with zf.open(target) as f:
+            while True:
+                chunk = f.read(1 << 18)
+                if not chunk:
+                    break
+                data = carry + chunk
+                for m in _COL_RE.finditer(data):
+                    attrs = dict(re.findall(rb'(\w+)="([^"]*)"', m.group(1)))
+                    try:
+                        mn, mx = int(attrs[b"min"]), int(attrs[b"max"])
+                        w = float(attrs[b"width"])
+                    except (KeyError, ValueError):
+                        continue
+                    for c in range(mn, min(mx, mn + 200) + 1):
+                        widths[c] = w
+                if b"<sheetData" in data:
+                    break
+                carry = data[-128:]
+        return widths
 
 
 def xlsx_merge_ranges(path, sheet_name):
@@ -180,6 +212,8 @@ class _XlsxReader:
             keys=keys,
             merges=[mg for mg in ranges if mg.min_row >= header_row
                     and mg.max_row <= header_row + height - 1],
+            all_merges=ranges,
+            col_widths=xlsx_column_widths(self.path, sheet_name),
             title=recognize.detect_title(window, header_row, ranges),
             low_confidence=det.low_confidence,
         )
@@ -193,8 +227,8 @@ class _XlsxReader:
     def iter_data_rows(self, source):
         ws = self.wb[source.sheet_name]
         start = source.structure.header_row + source.structure.height
-        for row in ws.iter_rows(min_row=start):
-            yield [c for c in row]   # ReadOnlyCell 列表（带 number_format/font/fill）
+        for row_no, row in enumerate(ws.iter_rows(min_row=start), start=start):
+            yield row_no, [c for c in row]   # ReadOnlyCell 列表（带 number_format/font/fill）
 
     def header_cells(self, source):
         ws = self.wb[source.sheet_name]
@@ -259,9 +293,16 @@ class _XlsReader:
             window, det.header_row or 1, ranges)
         height = recognize.detect_region_height(window, header_row, ranges)
         keys = recognize.flatten_keys(window, header_row, height, ranges)
+        widths = {}
+        try:
+            ci = getattr(sheet, "colinfo_map", None) or {}
+            widths = {c + 1: round(v.width / 256.0, 2) for c, v in ci.items()}
+        except Exception:
+            pass
         return SheetStructure(
             sheet_name, header_row, height, keys,
             [mg for mg in ranges if mg.min_row >= header_row and mg.max_row <= header_row + height - 1],
+            all_merges=ranges, col_widths=widths,
             title=recognize.detect_title(window, header_row, ranges),
             low_confidence=det.low_confidence,
             warnings=(["未探测到表头，已按第 1 行处理（可手动指定）"] if det.header_row == 0 else []),
@@ -275,7 +316,7 @@ class _XlsReader:
         st = source.structure
         start = st.header_row + st.height - 1          # 0-based 起始行
         for r in range(start, sheet.nrows):
-            yield [self._conv(sheet, r, c) for c in range(sheet.ncols)]  # 原生值直传
+            yield r + 1, [self._conv(sheet, r, c) for c in range(sheet.ncols)]  # 原生值直传
 
     def header_cells(self, source):
         sheet = self.book.sheet_by_name(source.sheet_name)
@@ -341,7 +382,7 @@ class _CsvReader:
         start = source.structure.header_row          # csv 高度恒 1
         for i, row in enumerate(self._reopen(), start=1):
             if i > start:
-                yield [v if v != "" else None for v in row]   # 原生值直传
+                yield i, [v if v != "" else None for v in row]   # 原生值直传
 
     def header_cells(self, source):
         r = source.structure.header_row

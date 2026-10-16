@@ -91,6 +91,8 @@ class _TablePage:
             + (1 if source_label else 0)
         self.base_name = base_name
         self.row_index = 0
+        self._col_widths = {}
+        self.page_epoch = 0
         self._new_page(header_rows, header_merges, extra_headers, source_label, first=True)
 
     # ---------------------------------------------------------------- 分页
@@ -99,8 +101,28 @@ class _TablePage:
         name = book._next_sheet_name(self.base_name if first else self.base_name)
         self.ws = book.wb.create_sheet(name)
         self.row_index = 0
+        self.page_epoch = 0                      # 分页代际（数据区合并翻译用）
         merges = self._write_header(header_rows, header_merges, extra_headers, source_label)
+        self._page_merges = merges               # 同一 list 对象，存于 book._pages_merges
         book._pages_merges.append(merges)
+        self._apply_widths()
+
+    def add_extra_merge(self, c1, r1, c2, r2):
+        """登记数据区合并（输出坐标，随 mergeCells 后处理一并注入）。"""
+        if (c1, r1) != (c2, r2):
+            self._page_merges.append((c1, r1, c2, r2))
+
+    def set_col_widths(self, widths):
+        """列宽（1-based 列号 → 字符宽）；分页续写时自动重新应用。"""
+        self._col_widths.update(widths or {})
+        self._apply_widths()
+
+    def _apply_widths(self):
+        for col, w in getattr(self, "_col_widths", {}).items():
+            try:
+                self.ws.column_dimensions[col_letter(col)].width = w
+            except Exception:
+                pass
 
     def _write_header(self, header_rows, header_merges, extra_headers, source_label):
         """写出表头区：模板行原样（含合并结构），追加列纵向合并跨满表头高度。"""
@@ -178,6 +200,7 @@ class _TablePage:
         self.row_index += 1
 
     def paginate_restart(self, header_rows, header_merges, extra_headers, source_label):
+        self.page_epoch += 1                  # 代际+1：跨页的合并范围将被上层丢弃
         self._new_page(header_rows, header_merges, extra_headers, source_label, first=False)
 
 

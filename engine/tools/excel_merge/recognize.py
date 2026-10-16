@@ -145,9 +145,14 @@ def detect_title(window_rows, header_row, ranges):
 
 
 def extend_header_up(window_rows, header_row, ranges):
-    """多行表头的父级行因合并占位得分偏低 → 选中行后向上回溯：
-    上一行 ≥2 个非空纯文本格、且存在跨列/跨行合并结构信号 → 表头实际从该行开始。
-    标题/制表行只有 1 个非空格，天然不会被误吸收。
+    """多行表头的父级行因合并占位得分偏低 → 选中行后向上回溯。
+
+    吸收条件（全部满足）：
+    1. 上一行 ≥2 个非空纯文本格（标题/制表行只有 1 个非空格，天然不吸收）；
+    2. 该行自身有合并起点（跨列或跨行）；
+    3. 合并覆盖率 ≥60%：复杂统计表的父级行被纵向/横向合并近乎整行覆盖
+       （如 A4:A5 + F4:G4 + H4:S4），而稀疏的"盖章/联系人/填报时间"行
+       只有局部合并（如仅 N3:S3），不满足覆盖率 → 不会被误吸收。
     """
     r = header_row - 1
     while r >= 1:
@@ -159,6 +164,11 @@ def extend_header_up(window_rows, header_row, ranges):
             (mg.horizontal() or mg.vertical()) and mg.min_row == r for mg in ranges
         )
         if not has_merge_signal:
+            break
+        width = max((len(c) for c in window_rows[r - 1:header_row]), default=0)
+        covered = sum(1 for c in range(1, width + 1)
+                      if any(mg.covers(r, c) for mg in ranges))
+        if width == 0 or covered / width < 0.6:
             break
         header_row = r
         r -= 1

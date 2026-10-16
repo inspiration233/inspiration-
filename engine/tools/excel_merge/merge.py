@@ -257,10 +257,21 @@ def _merge_group(book, group, options, template_index, report, progress, cancel)
     page = book.add_table(base_name, header_rows, merges, extra_texts, source_label)
     page_capacity = XLSX_MAX_ROWS
 
+    # 列宽：保留样式模式 / 工作簿拷贝模式 复制模板列宽
+    keep_look = options.style == "preserve" or options.mode == "workbook"
+    if keep_look:
+        inv0 = {si: oi for oi, si in enumerate(maps[0]) if si is not None}
+        widths = {inv0[c - 1] + 1: w for c, w in template.structure.col_widths.items()
+                  if inv0.get(c - 1) is not None}
+        if widths:
+            page.set_col_widths(widths)
+
     rows_total = 0
     for fi, (src, mapping) in enumerate(zip(src_list, maps)):
         data_rows = 0
-        for cells in src.iter_data_rows():
+        row_map = {}                       # 源行号 → (分页代际, 输出行号)
+        dstart = src.structure.header_row + src.structure.height
+        for row_no, cells in src.iter_data_rows():
             if cancel and cancel():
                 raise Cancelled()
             values = [getattr(c, "value", c) for c in cells]
@@ -282,6 +293,26 @@ def _merge_group(book, group, options, template_index, report, progress, cancel)
             page.write_row(out_cells)
             rows_total += 1
             data_rows += 1
+            row_map[row_no] = (page.page_epoch, page.row_index)
+        # 数据区合并还原：把源合并范围翻译到输出坐标（同页且行连续才有效）
+        if keep_look and data_rows:
+            inv_map = {si: oi for oi, si in enumerate(mapping) if si is not None}
+            kept = 0
+            for mg in getattr(src.structure, "all_merges", []):
+                if mg.min_row < dstart:
+                    continue
+                e1, r1 = row_map.get(mg.min_row, (None, None))
+                e2, r2 = row_map.get(mg.max_row, (None, None))
+                if e1 is None or e1 != e2 or r2 - r1 != mg.max_row - mg.min_row:
+                    continue
+                c1, c2 = inv_map.get(mg.min_col - 1), inv_map.get(mg.max_col - 1)
+                if c1 is None or c2 is None or c2 - c1 != mg.max_col - mg.min_col:
+                    continue
+                page.add_extra_merge(c1 + 1, r1, c2 + 1, r2)
+                kept += 1
+            if kept:
+                totals["data_merges_preserved"] = \
+                    totals.get("data_merges_preserved", 0) + kept
         if data_rows == 0:
             report["warnings"].append(f"「{src.display}」仅有表头无数据，已跳过")
             totals["empty_sources"] += 1
