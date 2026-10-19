@@ -254,11 +254,14 @@ def merge_group_fidelity(book, group, options, template_index, report,
     if shape == "stack" and len(src_list) > 1:
         pres = [s.structure.pre_rows for s in src_list]
         for i in range(min(len(p) for p in pres)):
-            if all(p[i] == pres[0][i] for p in pres) and any(
-                    v not in (None, "") for v in pres[0][i]):
-                common_pre_n = i + 1
+            row = pres[0][i]
+            is_blank = not any(v not in (None, "") for v in row)
+            if is_blank:
+                continue                     # 空行跳过, 不断链
+            if all(p[i] == row for p in pres):
+                common_pre_n = i + 1         # 共同非空行 → 保留
             else:
-                break
+                break                        # 内容不同 → 之后全部进差异区
         dicts = [_extract_meta(p[common_pre_n:]) for p in pres]
         cand = {}
         for d in dicts:

@@ -290,6 +290,9 @@ def extend_header_up(window_rows, header_row, ranges):
     while r >= 1:
         cells = window_rows[r - 1]
         non_empty = _row_nonempty(cells)
+        if not non_empty:
+            r -= 1                          # 空行: 跳过继续向上, 不断链
+            continue
         if len(non_empty) < 2 or any(is_numberlike(v) for v in non_empty):
             break
         has_merge_signal = any(
