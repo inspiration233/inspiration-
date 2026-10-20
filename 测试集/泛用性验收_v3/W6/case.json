@@ -50,5 +50,8 @@
   "invariants": [
     "C001/C002/C004 不变",
     "月份调整后C003的数量不变"
-  ]
+  ],
+  "expected_monthly_summary": "人工核对：按月汇总W6的任务",
+  "expected_annual_update": "人工核对：全年表反映反馈变更",
+  "verification_status": "未验证（需在Excel/WPS中人工打开核对）"
 }

@@ -25,5 +25,8 @@
   "invariants": [
     "合计公式=SUM(C:N)范围正确",
     "月份数值不变"
-  ]
+  ],
+  "expected_monthly_summary": "人工核对：按月汇总W2的任务",
+  "expected_annual_update": "人工核对：全年表反映反馈变更",
+  "verification_status": "未验证（需在Excel/WPS中人工打开核对）"
 }

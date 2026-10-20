@@ -22,5 +22,8 @@
   "invariants": [
     "金额只在每单位首行(合并单元格锚点)，子行金额为空",
     "纵向合并在拆分后应还原为该单位独立的合并"
-  ]
+  ],
+  "expected_monthly_summary": "人工核对：按月汇总W4的任务",
+  "expected_annual_update": "人工核对：全年表反映反馈变更",
+  "verification_status": "未验证（需在Excel/WPS中人工打开核对）"
 }

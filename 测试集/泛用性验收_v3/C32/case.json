@@ -1,0 +1,32 @@
+{
+  "case_id": "C32",
+  "type": "反馈",
+  "scenario": "4种字段修改：B001改名称/B002改月份/B003改单位/B004加备注",
+  "expected_changes": [
+    {
+      "task": "B001",
+      "field": "任务名称",
+      "old": "任务A",
+      "new": "任务A（已改名）"
+    },
+    {
+      "task": "B002",
+      "field": "月份",
+      "old": "2月",
+      "new": "6月"
+    },
+    {
+      "task": "B003",
+      "field": "责任单位",
+      "old": "工程技术部",
+      "new": "财务部"
+    },
+    {
+      "task": "B004",
+      "field": "备注",
+      "old": null,
+      "new": "新增备注信息"
+    }
+  ],
+  "invariant": "B005无变化"
+}

@@ -1,0 +1,22 @@
+{
+  "case_id": "C33",
+  "type": "反馈",
+  "scenario": "删除B003, 插入NEW01",
+  "expected_changes": [
+    {
+      "task": "B003",
+      "field": "整行",
+      "old": "存在",
+      "new": "缺失"
+    },
+    {
+      "task": "NEW01",
+      "field": "新增",
+      "old": null,
+      "new": "插入的新任务"
+    }
+  ],
+  "ambiguity": [
+    "B003缺失是被删除还是未填写？不应自动等同删除"
+  ]
+}
