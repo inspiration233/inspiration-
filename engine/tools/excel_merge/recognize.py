@@ -117,7 +117,7 @@ def _seq_labels(row):
     return inc >= 2
 
 
-def detect_orientation(window_rows, window=HEADER_SCAN_WINDOW):
+def detect_orientation(window_rows, window=HEADER_SCAN_WINDOW, ranges=None):
     """多信号方向检测，返回 (orientation, confident)。
 
     信号(加权): 序列标签方向(强,+2) — "类别1/1月/2024年"这类带序标签出现在某行
@@ -230,25 +230,30 @@ class HeaderDetect:
     title: str = None            # 表头上方的标题/制表行文本（若有）
 
 
-def detect_header_row(window_rows, window=HEADER_SCAN_WINDOW):
+def detect_header_row(window_rows, window=HEADER_SCAN_WINDOW, ranges=None):
     """window_rows: 前 N 行的值列表（1-based 索引即行号）。平手取更早的行。
 
-    "下一行像数据"(≥2个数字/日期形态格)给 +0.15：真表头下面是数据行，
-    而"标签：值"型盖章/制表行的下一行往往仍是纯文本(真表头)，以此区分。
+    加分项:
+    1. "下一行像数据"(≥2个数字/日期格) +0.15 — 真表头下面是数据行;
+    2. "纵向合并底端" +0.12 — 该行是 A4:A5 等纵向合并的 max_row, 说明上方有父表头,
+       本行是子表头行(r4-r5 双行结构的 r5), 防止被高密度数据行(r7)反超。
     """
+    import datetime as _dt
     width = max((len(r) for r in window_rows), default=0)
+    # (后置覆盖见 detect_header_row_post)
+
     scores = {}
     for i, cells in enumerate(window_rows[:window], start=1):
         s = score_header_row(cells, width)
         if s > 0 and i < len(window_rows):
-            import datetime as _dt
             ne = _row_nonempty(cells)
-            # 表头行自身: 纯字符串文本占比(datetime/数字不算)
             str_texts = [v for v in ne if isinstance(v, str)]
             text_ratio = len(str_texts) / max(len(ne), 1)
-            # 下一行像数据: 数字或日期形态 ≥2 格
+
             def _datalike(v):
-                return isinstance(v, (int, float, _dt.datetime, _dt.date))                     or is_numberlike(v)
+                return isinstance(v, (int, float, _dt.datetime, _dt.date)) \
+                    or is_numberlike(v)
+
             nxt = _row_nonempty(window_rows[i])
             if text_ratio >= 0.8 and sum(1 for v in nxt if _datalike(v)) >= 2:
                 s += 0.15
@@ -273,6 +278,46 @@ def detect_title(window_rows, header_row, ranges):
         for mg in ranges:
             if mg.covers(r, col) and mg.max_col - mg.min_col >= 2:
                 return str(non_empty[0])
+    return None
+
+
+def detect_header_row_post(window_rows, detected_row, ranges,
+                          window=HEADER_SCAN_WINDOW):
+    """结构后置覆盖: ≥3列纵向合并共享同一起点行 → 该行几乎必然是多行表头区顶.
+
+    例: A4:A5 + B4:B5 + C4:C5 + D4:D5 + E4:E5 共5个合并都从r4起 → r4是表头顶.
+    这比微调打分更鲁棒 — 无论数据区多"脏"(XXX占位/公式串), 表头区的
+    多列合并结构是确定性的.
+    返回 (header_row, height) 或 None(无覆盖).
+    """
+    if not ranges:
+        return None
+    from collections import Counter
+    starts = Counter()
+    for mg in ranges:
+        if mg.vertical() and mg.min_row <= window:
+            starts[mg.min_row] += 1
+    # 找 ≥3 列同起点的行(排除整行标题那种单一大合并)
+    for row, count in starts.most_common():
+        if count < 3:
+            break
+        # ≥3列纵向合并同起点已是强信号; 横向合并(如H4:S4父级)不排斥
+        top_merges = [mg for mg in ranges
+                      if mg.min_row == row and mg.vertical()]
+        # 该行应非空且有文本
+        if row <= len(window_rows):
+            cells = window_rows[row - 1]
+            ne = _row_nonempty(cells)
+            if not ne:
+                continue
+            texts = [v for v in ne if isinstance(v, str)]
+            if len(texts) / max(len(ne), 1) < 0.5:
+                continue                        # 数字为主 → 不是表头
+            # 计算表头区高度(合并向下延伸的最大值)
+            height = max(mg.max_row for mg in top_merges) - row + 1
+            # 只在探测行 >= 该行时覆盖(防止向下错抢数据区的合并)
+            if detected_row >= row:
+                return row, height
     return None
 
 

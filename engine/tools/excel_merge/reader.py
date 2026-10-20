@@ -213,7 +213,11 @@ class _XlsxReader:
             det = recognize.detect_header_row(window)
             header_row = det.header_row or 1
             header_row = recognize.extend_header_up(window, header_row, ranges)
-        height = recognize.detect_region_height(window, header_row, ranges)
+            post = recognize.detect_header_row_post(window, header_row, ranges)
+            if post:
+                header_row, height = post
+            else:
+                height = recognize.detect_region_height(window, header_row, ranges)
         keys = recognize.flatten_keys(window, header_row, height, ranges)
         st = SheetStructure(
             sheet_name=sheet_name,
