@@ -345,7 +345,9 @@ window.toolMount = (root, ctx) => {
   }
 
   $('btn-merge').onclick = async () => {
-    const stamp = new Date().toISOString().slice(0, 16).replace(/[-:T]/g, '').replace(/(\d{8})(\d{4})/, '$1_$2');
+    const now = new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}`;
     const out = await toolbox.saveDialog(`合并结果_${stamp}.xlsx`);
     if (!out) return;
     startMerge(out);
