@@ -28,5 +28,17 @@
   ],
   "expected_monthly_summary": "人工核对：按月汇总W2的任务",
   "expected_annual_update": "人工核对：全年表反映反馈变更",
-  "verification_status": "未验证（需在Excel/WPS中人工打开核对）"
+  "verification_status": "未验证（需人工在Excel中核对公式和数值）",
+  "expected_changes": [
+    {
+      "task": "任务1",
+      "field": "1月数量",
+      "old": "原值",
+      "new": 99
+    }
+  ],
+  "expected_monthly": "1月汇总中财务部任务1数量=99",
+  "expected_annual": "全年合计公式包含新数量",
+  "business_premise": "以起始月归入月度汇总；横向月份按列值直接读取",
+  "structure_note": "横向月份表，A列单位用分组(首行有值)，自检的单位一致性检查不适用"
 }

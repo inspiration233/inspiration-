@@ -5,26 +5,27 @@
   "expected_changes": [
     {
       "task": "H001",
-      "uuid": "保留",
-      "match": "✓"
+      "field": "数量",
+      "old": 10,
+      "new": 12
     },
     {
       "task": "H002",
-      "uuid": "丢失",
-      "match": "需回退到编号匹配"
-    },
-    {
-      "task": "H003",
-      "uuid": "保留",
-      "match": "✓"
+      "field": "UUID",
+      "old": "UUID-DEF456",
+      "new": null,
+      "note": "UUID丢失，需回退到编号匹配"
     },
     {
       "task": "新行",
-      "uuid": "UUID-ABC123(与H001重复)",
-      "match": "⚠ 冲突"
+      "field": "UUID",
+      "old": null,
+      "new": "UUID-ABC123",
+      "note": "UUID与H001重复，冲突"
     }
   ],
   "ambiguity": [
     "UUID重复(H001和新行都是ABC123)如何区分？需人工确认"
-  ]
+  ],
+  "correction": "补全H001数量10→12变更；UUID列从隐藏变为可见也是变更"
 }

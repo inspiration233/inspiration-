@@ -52,6 +52,12 @@
     "月份调整后C003的数量不变"
   ],
   "expected_monthly_summary": "人工核对：按月汇总W6的任务",
-  "expected_annual_update": "人工核对：全年表反映反馈变更",
-  "verification_status": "未验证（需在Excel/WPS中人工打开核对）"
+  "expected_annual_update": "C003起始月3→5, 结束月3→5, 其余不变",
+  "verification_status": "未验证",
+  "business_premise": "跨月任务按起始月归入月度汇总",
+  "expected_monthly": {
+    "3月原汇总": "含C001(1-3月)和C003(原3月)",
+    "3月新汇总": "C003移出后仅含C001",
+    "5月新汇总": "新增C003(调整为5月)和原有的C004(4-6月)"
+  }
 }

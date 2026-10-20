@@ -33,5 +33,11 @@
   ],
   "expected_monthly_summary": "人工核对：按月汇总W3的任务",
   "expected_annual_update": "人工核对：全年表反映反馈变更",
-  "verification_status": "未验证（需在Excel/WPS中人工打开核对）"
+  "verification_status": "未验证（需在Excel/WPS中人工打开核对）",
+  "fidelity_requirements": {
+    "双行表头": "拆分文件保留C1:D1和E1:G1合并结构",
+    "条件格式": "完成率<0.5红色填充保留",
+    "公式": "完成率公式=F/E行号随位置调整",
+    "冻结": "冻结A3(双行表头下方)"
+  }
 }
