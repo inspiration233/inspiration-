@@ -315,8 +315,12 @@ def detect_header_row_post(window_rows, detected_row, ranges,
                 continue                        # 数字为主 → 不是表头
             # 计算表头区高度(合并向下延伸的最大值)
             height = max(mg.max_row for mg in top_merges) - row + 1
-            # 只在探测行 >= 该行时覆盖(防止向下错抢数据区的合并)
-            if detected_row >= row:
+            # 覆盖条件:
+            # a) 探测行 >= 结构行(正常: 探测偏晚, 结构信号往上拉) — 原有逻辑
+            # b) 探测行是标题/说明行(≤2个非空格) → 无论位置都覆盖(修正探测偏早到标题的bug)
+            det_cells = _row_nonempty(window_rows[detected_row - 1])                 if detected_row <= len(window_rows) else []
+            is_title_like = len(det_cells) <= 2
+            if detected_row >= row or is_title_like:
                 return row, height
     return None
 
