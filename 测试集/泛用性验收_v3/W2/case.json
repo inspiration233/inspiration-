@@ -31,14 +31,16 @@
   "verification_status": "未验证（需人工在Excel中核对公式和数值）",
   "expected_changes": [
     {
-      "task": "任务1",
-      "field": "1月数量",
+      "task": "组织安全培训演练",
+      "field": "1月数量(B列)",
       "old": "原值",
-      "new": 99
+      "new": 99,
+      "unit": "财务部"
     }
   ],
-  "expected_monthly": "1月汇总中财务部任务1数量=99",
+  "expected_monthly": "1月汇总中财务部'组织安全培训演练'数量=99",
   "expected_annual": "全年合计公式包含新数量",
   "business_premise": "以起始月归入月度汇总；横向月份按列值直接读取",
-  "structure_note": "横向月份表，A列单位用分组(首行有值)，自检的单位一致性检查不适用"
+  "structure_note": "横向月份表，A列单位用分组(首行有值)，自检的单位一致性检查不适用",
+  "correction": "修正：B列=1月（非C列=2月），任务='组织安全培训演练'（非'预算'）"
 }

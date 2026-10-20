@@ -74,5 +74,132 @@
     "冻结": "冻结窗格在拆分和更新后保留",
     "列宽": "原始列宽在拆分和更新后保留",
     "公式": "预算金额=E*100公式语义不变"
+  },
+  "fidelity_check_results": {
+    "W1_拆分_安全管理部": {
+      "all_pass": true,
+      "details": {
+        "冻结": {
+          "value": "A2",
+          "pass": true
+        },
+        "下拉": {
+          "value": "2个",
+          "pass": true
+        },
+        "条件格式": {
+          "value": "1个",
+          "pass": true
+        },
+        "列宽": {
+          "value": "A=10.0",
+          "pass": true
+        },
+        "公式": {
+          "value": "=E2*100",
+          "pass": true
+        }
+      }
+    },
+    "W1_拆分_工程技术部": {
+      "all_pass": true,
+      "details": {
+        "冻结": {
+          "value": "A2",
+          "pass": true
+        },
+        "下拉": {
+          "value": "2个",
+          "pass": true
+        },
+        "条件格式": {
+          "value": "1个",
+          "pass": true
+        },
+        "列宽": {
+          "value": "A=10.0",
+          "pass": true
+        },
+        "公式": {
+          "value": "=E2*100",
+          "pass": true
+        }
+      }
+    },
+    "W1_拆分_市场营销部": {
+      "all_pass": true,
+      "details": {
+        "冻结": {
+          "value": "A2",
+          "pass": true
+        },
+        "下拉": {
+          "value": "2个",
+          "pass": true
+        },
+        "条件格式": {
+          "value": "1个",
+          "pass": true
+        },
+        "列宽": {
+          "value": "A=10.0",
+          "pass": true
+        },
+        "公式": {
+          "value": "=E2*100",
+          "pass": true
+        }
+      }
+    },
+    "W1_拆分_综合办公室": {
+      "all_pass": true,
+      "details": {
+        "冻结": {
+          "value": "A2",
+          "pass": true
+        },
+        "下拉": {
+          "value": "2个",
+          "pass": true
+        },
+        "条件格式": {
+          "value": "1个",
+          "pass": true
+        },
+        "列宽": {
+          "value": "A=10.0",
+          "pass": true
+        },
+        "公式": {
+          "value": "=E2*100",
+          "pass": true
+        }
+      }
+    },
+    "W1_拆分_财务部": {
+      "all_pass": true,
+      "details": {
+        "冻结": {
+          "value": "A2",
+          "pass": true
+        },
+        "下拉": {
+          "value": "2个",
+          "pass": true
+        },
+        "条件格式": {
+          "value": "1个",
+          "pass": true
+        },
+        "列宽": {
+          "value": "A=10.0",
+          "pass": true
+        },
+        "公式": {
+          "value": "=E2*100",
+          "pass": true
+        }
+      }
+    }
   }
 }
