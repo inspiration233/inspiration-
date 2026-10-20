@@ -1,0 +1,29 @@
+{
+  "case_id": "W2",
+  "type": "完整流程",
+  "scenario": "月份横向排列（1月~12月为列），每行=单位×任务，按单位拆分",
+  "structure": {
+    "header_row": 2,
+    "pre_rows": 1,
+    "columns": 15,
+    "month_location": "横向列(C~N列)",
+    "unit_location": "A列分组"
+  },
+  "ground_truth": {
+    "units": [
+      "综合办公室",
+      "财务部",
+      "工程技术部"
+    ],
+    "tasks_per_unit": 4,
+    "months": 12
+  },
+  "expected_split": "每个单位4行任务，保留月份列+合计公式",
+  "ambiguity": [
+    "合计行是否应包含在拆分文件中（原始表最后一行是跨单位合计）"
+  ],
+  "invariants": [
+    "合计公式=SUM(C:N)范围正确",
+    "月份数值不变"
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "case_id": "W5",
+  "type": "结构案例",
+  "scenario": "月份在Sheet名中（1月/2月/3月各一个Sheet），不在单元格内",
+  "ground_truth": {
+    "sheets": [
+      "1月",
+      "2月",
+      "3月"
+    ],
+    "tasks_per_sheet": [
+      3,
+      4,
+      5
+    ]
+  },
+  "ambiguity": [
+    "汇总时月份信息来自Sheet名而非列值，工具是否能正确提取"
+  ]
+}

@@ -1,0 +1,64 @@
+{
+  "case_id": "W1",
+  "type": "完整流程",
+  "scenario": "标准年度计划表，月份在单列，按单位拆分后收集反馈",
+  "structure": {
+    "header_row": 4,
+    "pre_rows": 3,
+    "columns": 7,
+    "month_location": "单列(D列)",
+    "unit_location": "单列(C列)"
+  },
+  "ground_truth": {
+    "total_tasks": 12,
+    "units": [
+      "综合办公室",
+      "财务部",
+      "工程技术部",
+      "安全管理部",
+      "市场营销部"
+    ],
+    "tasks_by_unit": {
+      "综合办公室": 3,
+      "财务部": 3,
+      "工程技术部": 2,
+      "安全管理部": 2,
+      "市场营销部": 2
+    },
+    "june_tasks": 2
+  },
+  "expected_split": "每个单位一个文件，只含该单位任务",
+  "expected_monthly": "6月汇总含原有6月任务+新增T999",
+  "expected_annual_update": "T002数量20→25, T005状态→已完成, 新增T999",
+  "feedback_changes": [
+    {
+      "task": "T002",
+      "field": "计划数量",
+      "old": 20,
+      "new": 25
+    },
+    {
+      "task": "T999",
+      "field": "新增",
+      "old": null,
+      "new": "新增任务"
+    },
+    {
+      "task": "T005",
+      "field": "状态",
+      "old": "进行中",
+      "new": "已完成"
+    }
+  ],
+  "no_feedback_units": [
+    "综合办公室",
+    "安全管理部"
+  ],
+  "ambiguity": [],
+  "invariants": [
+    "未反馈单位的任务不变",
+    "任务编号不被重排",
+    "预算金额公式=E*100语义不变",
+    "状态下拉可选值不变"
+  ]
+}
