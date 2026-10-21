@@ -839,7 +839,8 @@ def _skip_row(vals, options, totals):
         return True
     if options.strip_serial_rows:
         ne = [(i, v) for i, v in enumerate(vals) if v not in (None, "")]
-        if len(ne) == 1 and ne[0][0] == 0 and is_numberlike(ne[0][1]):
+        # 恰好1个非空格 + 值像序号(数字形态,不限列位置) → 仅序号的空行
+        if len(ne) == 1 and is_numberlike(ne[0][1]):
             totals["serial_rows_removed"] = totals.get("serial_rows_removed", 0) + 1
             return True
     return False

@@ -411,8 +411,7 @@ def _merge_group(book, group, options, template_index, report, progress, cancel,
                 continue
             if options.strip_serial_rows:
                 non_empty = [(i, v) for i, v in enumerate(values) if v not in (None, "")]
-                if (len(non_empty) == 1 and non_empty[0][0] == 0
-                        and is_numberlike(non_empty[0][1])):
+                if (len(non_empty) == 1 and is_numberlike(non_empty[0][1])):
                     totals["serial_rows_removed"] = totals.get("serial_rows_removed", 0) + 1
                     continue
             if options.remove_summary and is_summary_row(
