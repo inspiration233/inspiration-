@@ -258,6 +258,7 @@ class _XlsxReader:
         if not confident:
             st.warnings.append("方向待确认（疑似交叉表），可在体检中手动切换纵向/横向")
         st.data_end_row = detect_data_end_row(ws, header_row, height)
+        st.data_end = st.data_end_row  # 别名: fidelity 用 data_end 访问
         return st
 
     def _structure_transposed(self, ws, sheet_name, ranges, confident=True):
