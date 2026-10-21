@@ -37,7 +37,7 @@ class Options:
     remove_summary: bool = True
     summary_keywords: tuple = DEFAULT_SUMMARY_KEYWORDS
     strip_serial_rows: bool = True
-    min_fill_ratio: float = 0.10  # 行内非空格占比低于此值 → 剔除(默认10%)          # 剔除"仅有序号"的空行
+    min_fill_ratio: float = 0.20  # 行内非空格占比低于此值 → 剔除(默认20%)          # 剔除"仅有序号"的空行
     renumber_serial: bool = True            # 序号列重排(合并后连续编号)
     source_column: bool = False
     include_hidden: bool = False
