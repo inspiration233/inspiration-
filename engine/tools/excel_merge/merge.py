@@ -206,6 +206,45 @@ def merge(paths, out_path, options=None, progress=None, cancel=None):
         options.style = {"unified": "fast", "preserve": "fidelity"}.get(
             options.style, options.style)
 
+        # 1.5) 同名同内容Sheet去重: 两个文件中名字和内容完全相同的Sheet只保留一份
+        # (典型的配置/规格表场景: 每个单位文件里附同一份参数表)
+        from . import reader as _rd
+        def _sheets_identical(s1, s2):
+            if s1.structure.keys != s2.structure.keys:
+                return False
+            try:
+                r1 = _rd.open_reader(s1.path)
+                r2 = _rd.open_reader(s2.path)
+                w1, w2 = r1.wb[s1.sheet_name], r2.wb[s2.sheet_name]
+                if w1.max_row != w2.max_row or w1.max_column != w2.max_column:
+                    r1.close(); r2.close()
+                    return False
+                identical = all(
+                    w1.cell(r, c).value == w2.cell(r, c).value
+                    for r in range(1, w1.max_row + 1)
+                    for c in range(1, w1.max_column + 1)
+                )
+                r1.close(); r2.close()
+                return identical
+            except Exception:
+                return False
+
+        deduped = []
+        seen_sheets = []
+        for s in usable:
+            is_dup = False
+            for prev in seen_sheets:
+                if (s.structure.sheet_name == prev.structure.sheet_name
+                        and _sheets_identical(s, prev)):
+                    report["warnings"].append(
+                        f"「{s.display}」与「{prev.display}」内容完全相同，已去重保留一份")
+                    is_dup = True
+                    break
+            if not is_dup:
+                deduped.append(s)
+                seen_sheets.append(s)
+        usable = deduped
+
         # 2) 分组：workbook=每源一页；group=按Sheet名；single/sheets=按结构签名异构分组
         def _sig(s):
             return (frozenset(s.structure.keys), s.structure.height)

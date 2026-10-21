@@ -708,7 +708,13 @@ def merge_group_fidelity(book, group, options, template_index, report,
             if pg != page_no:
                 continue
             if serial_idx is not None:
-                serial_counter += 1
+                # 数值型序号(int/float/纯数字字符串)→连续重排; 文本序号(如"例1")→保留原值
+                orig_serial = None
+                if cells_f and serial_idx < len(cells_f):
+                    orig_serial = getattr(cells_f[serial_idx], "value", None)
+                if isinstance(orig_serial, (int, float)) or (
+                        isinstance(orig_serial, str) and orig_serial.strip().isdigit()):
+                    serial_counter += 1
             for oi, si in enumerate(mapping):
                 out = ws.cell(row=out_row, column=oi + 1)
                 if si is None:
@@ -748,7 +754,14 @@ def merge_group_fidelity(book, group, options, template_index, report,
                         book.big_numbers_converted += 1
                     out.value = v
             if serial_idx is not None:
-                ws.cell(row=out_row, column=serial_idx + 1).value = serial_counter
+                orig_v = None
+                if cells_f and serial_idx < len(cells_f):
+                    orig_v = getattr(cells_f[serial_idx], "value", None)
+                is_num = isinstance(orig_v, (int, float)) or (
+                        isinstance(orig_v, str) and orig_v.strip().isdigit())
+                if is_num:
+                    ws.cell(row=out_row, column=serial_idx + 1).value = serial_counter
+                # 文本序号由正常单元格拷贝自然保留
             if source_label:
                 ws.cell(row=out_row, column=total_width).value = src.display
             for j, label in enumerate(meta_labels):
@@ -827,6 +840,20 @@ def merge_group_fidelity(book, group, options, template_index, report,
 
     for c in contents:
         c.close()
+
+    # 后处理: 序号列重排(数值型序号连续编号,文本序号保留)
+    # 在所有数据写完之后执行,避免内循环状态管理的复杂性
+    if options.renumber_serial and serial_idx is not None:
+        counter = 0
+        for r in range(height + 1, ws.max_row + 1):
+            v = ws.cell(r, serial_idx + 1).value
+            if v is None or v == "":
+                continue
+            if isinstance(v, (int, float)) or (isinstance(v, str) and v.strip().isdigit()):
+                counter += 1
+                ws.cell(r, serial_idx + 1).value = counter
+            # 文本序号(如"例1")保留原值,不计数
+
     return ws
 
 

@@ -33,7 +33,7 @@ def _theme_signature(blob):
 def options_for(payload):
     raw = dict(payload.get("options") or {})
     defaults = {"style": "fidelity", "remove_summary": False, "strip_serial_rows": True, "min_fill_ratio": 0.20,
-                "renumber_serial": False, "source_column": False, "preserve_blank_rows": True,
+                "renumber_serial": True, "source_column": False, "preserve_blank_rows": True,
                 "preserve_template_preamble": False, "metadata_columns": False, "exact_headers": False}
     defaults.update(raw)
     defaults["selections"] = payload.get("selections") or []
