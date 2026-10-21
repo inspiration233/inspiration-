@@ -52,6 +52,12 @@ def apply_selection(src, spec):
         st.field_offset = field_offset
         st.data_start = selected["data_start"]
         st.data_end = selected["data_end"]
+        # auto模式下: 结构检测的data_end_row是数据区域的实际上界,
+        # 不应被selection的max_row覆盖(否则序号占位尾部被读入)
+        detected_end = getattr(st, "data_end_row", 0)
+        if (spec.get("selection_origin") == "auto" and detected_end > 0
+                and st.data_end > detected_end):
+            st.data_end = detected_end
         st.field_end = selected["field_end"]
         merges = []
         for mg in ws.merged_cells.ranges:
