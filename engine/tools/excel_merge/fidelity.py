@@ -843,6 +843,13 @@ def _skip_row(vals, options, totals):
         if len(ne) == 1 and is_numberlike(ne[0][1]):
             totals["serial_rows_removed"] = totals.get("serial_rows_removed", 0) + 1
             return True
+    # 填充率检查: 非空格数/列数 低于阈值 → 稀疏行剔除
+    ratio = getattr(options, "min_fill_ratio", 0)
+    if ratio > 0 and vals:
+        ne_count = sum(1 for v in vals if v not in (None, ""))
+        if ne_count / len(vals) < ratio:
+            totals["sparse_rows_removed"] = totals.get("sparse_rows_removed", 0) + 1
+            return True
     return False
 
 
