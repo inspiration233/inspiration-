@@ -197,7 +197,7 @@ def merge_export(payload, cancel=None, progress=None):
     if out.exists():
         raise ValueError("输出文件已存在，请选择新文件名")
     out.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix=".excel-merge-", dir=out.parent) as temp:
+    with tempfile.TemporaryDirectory(prefix="excel_merge_tmp_", dir=out.parent) as temp:
         staged = Path(temp) / out.name
         report = _generate(payload, str(staged), cancel, progress)
         if not report["can_export"]:
@@ -206,11 +206,10 @@ def merge_export(payload, cancel=None, progress=None):
             raise error
         if cancel and cancel():
             raise Cancelled()
-        # Exclusive reservation prevents overwriting a file created after preview.
-        with out.open("xb"):
-            pass
+        # 直接二进制复制(比 os.replace 更可靠, 避免Windows文件锁/隐藏目录/中文名问题)
+        import shutil
         try:
-            os.replace(staged, out)
+            shutil.copyfile(str(staged), str(out))
         except BaseException:
             out.unlink(missing_ok=True)
             raise
