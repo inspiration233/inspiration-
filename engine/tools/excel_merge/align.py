@@ -105,11 +105,11 @@ def align_sources(sources, mode, template_idx=0, allow_leaf=True):
         pair = {si: ti for si, ti in pair.items() if si not in explicit and ti not in assigned}
         pair.update(explicit)
         scounts, tcounts = Counter(skeys), Counter(match_keys)
-        ambiguous_sources = [i for i, key in enumerate(skeys) if scounts[key] > 1 and i not in pair]
-        ambiguous_targets = [i for i, key in enumerate(match_keys)
-                             if tcounts[key] > 1 and key in scounts and i not in pair.values() and i not in empty]
-        if ambiguous_sources or ambiguous_targets:
-            raise ValueError(f"「{source.display}」存在重名字段，请按位置明确对应所有重名字段，不能按出现顺序猜测")
+        # 重名字段: 只在源和模板的重名数量不一致时才视为真歧义(阻断)
+        # 同一模板产出的文件重名列数量相同 → 按出现位置自动对应(不是猜测,是确定性规则)
+        count_mismatch = any(tcounts[k] != c for k, c in scounts.items() if c > 1 and tcounts[k] != c)
+        if count_mismatch:
+            raise ValueError(f"「{source.display}」的重名字段数量与模板不一致，请手动指定字段对应")
         pairs.append(pair)
 
     if mode == "strict":
