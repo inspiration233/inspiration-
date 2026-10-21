@@ -92,6 +92,7 @@ def _sheet_record(src):
             "orientation": getattr(st, "orientation", "vertical"),
             "orientation_confident": getattr(st, "orientation_confident", True),
             "header_row": st.header_row, "height": st.height,
+            "data_end_row": getattr(st, "data_end_row", 0),
             "columns": list(st.keys), "title": st.title,
             "low_confidence": st.low_confidence, "warnings": list(st.warnings)}
 

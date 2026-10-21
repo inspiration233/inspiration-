@@ -46,6 +46,7 @@ class SheetStructure:
     all_merges: list = field(default_factory=list)   # 全表合并范围（数据区还原用）
     col_widths: dict = field(default_factory=dict)   # 列宽（保留样式复制用）
     orientation: str = "vertical"         # vertical 常规 | horizontal 横向表(转置读取)
+    data_end_row: int = 0                 # 数据区域结束行(0=到文件末尾); 连续稀疏行尾部截断
     orientation_confident: bool = True    # 方向检测置信度(低→体检提示人工确认)
     pre_rows: list = field(default_factory=list)       # 表头前置区行(值, 共性检测/拼接用)
     title: str = None                    # 识别到的标题文本（不进总表，进报告）
@@ -256,6 +257,7 @@ class _XlsxReader:
             st.warnings.append("未探测到表头，已按第 1 行处理（可手动指定）")
         if not confident:
             st.warnings.append("方向待确认（疑似交叉表），可在体检中手动切换纵向/横向")
+        st.data_end_row = detect_data_end_row(ws, header_row, height)
         return st
 
     def _structure_transposed(self, ws, sheet_name, ranges, confident=True):
@@ -288,15 +290,15 @@ class _XlsxReader:
         ws = self.wb[source.sheet_name]
         st = source.structure
         start = st.header_row + st.height
+        end = st.data_end_row if st.data_end_row > 0 else ws.max_row
         if st.orientation == "horizontal":
-            # 横向表：原列=记录。整表缓冲（方向探测已限 20000行×500列）
             buf = [list(row) for row in ws.iter_rows()]
             ncols = max((len(r) for r in buf), default=0)
             for c in range(start - 1, ncols):
                 yield c + 1, [(buf[r][c] if c < len(buf[r]) else None)
                               for r in range(len(buf))]
             return
-        for row_no, row in enumerate(ws.iter_rows(min_row=start), start=start):
+        for row_no, row in enumerate(ws.iter_rows(min_row=start, max_row=end), start=start):
             yield row_no, [c for c in row]   # ReadOnlyCell 列表（带 number_format/font/fill）
 
     def header_cells(self, source):
@@ -496,6 +498,28 @@ class _CsvReader:
 
 
 # --------------------------------------------------------------- 入口
+
+def detect_data_end_row(ws, header_row, height, max_check=200):
+    """检测数据区域实际结束行: 连续≥10行只有≤2个非空格 → 尾部占位, 截断.
+
+    返回最后一行有效数据的行号(1-based), 0=到文件末尾.
+    """
+    import itertools
+    data_start = header_row + height
+    sparse_run = 0
+    last_data_row = 0
+    for r in itertools.islice(range(data_start, ws.max_row + 1), max_check):
+        ne = sum(1 for c in range(1, min(ws.max_column + 1, 20))
+                 if ws.cell(r, c).value not in (None, ""))
+        if ne <= 2:
+            sparse_run += 1
+            if sparse_run >= 10:
+                return last_data_row  # 数据结束于稀疏行之前最后一行有数据的行
+        else:
+            sparse_run = 0
+            last_data_row = r
+    return 0  # 没有检测到明显的尾部截断
+
 
 def open_reader(path):
     ext = Path(path).suffix.lower()

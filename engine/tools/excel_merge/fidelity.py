@@ -644,15 +644,8 @@ def merge_group_fidelity(book, group, options, template_index, report,
                     out.append(None if isinstance(v, str) and v.startswith("=") else v)
             return out
 
-        # 第一遍: 全部收集行值(用于检测数据区域结束)
-        all_rows = list(_record_cells())
-        all_vals = [_vals(cf, rv) for _, cf, rv in all_rows]
-        data_end = detect_data_end(all_vals)
-
         keep = []
-        for idx, (row_no, cells_f, row_v) in enumerate(all_rows):
-            if data_end is not None and idx >= data_end:
-                break  # 数据区域已结束, 后续是序号占位尾部
+        for row_no, cells_f, row_v in _record_cells():
             if _skip_row(_vals(cells_f, row_v), options, totals):
                 continue
             keep.append((row_no, cells_f, row_v))
@@ -853,24 +846,7 @@ def _skip_row(vals, options, totals):
     return False
 
 
-DATA_END_SPARSE_THRESHOLD = 10  # 连续N行稀疏→数据区域结束
 
-def detect_data_end(rows_vals):
-    """检测数据区域结束位置: 找到第一个连续≥N行稀疏(≤2非空格)的起点.
-
-    返回数据结束的行索引(不含), None=全部是数据.
-    政务表单的典型场景: r6~r13有实际数据, r14~r104只有序号占位.
-    """
-    sparse_run = 0
-    for i, vals in enumerate(rows_vals):
-        ne_count = sum(1 for v in vals if v not in (None, ""))
-        if ne_count <= 2:
-            sparse_run += 1
-            if sparse_run >= DATA_END_SPARSE_THRESHOLD:
-                return i - sparse_run + 1  # 数据结束于稀疏行起点
-        else:
-            sparse_run = 0
-    return None
 
 
 def _write_row_fidelity(ws, out_row, cells_f, row_v, mapping, inv_map, row_map,
