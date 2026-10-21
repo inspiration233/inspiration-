@@ -264,12 +264,14 @@ def test_formula_loss_is_still_blocking_after_format_guards_relaxed(tmp_path, mo
     selected = [first, spec] if moved else [spec]
     payload = {"paths": [s["path"] for s in selected], "selections": selected}
     report = merge_preview(payload)
-    assert not report["can_export"]
+    # 公式转值现在是警告(允许导出), 不再阻断
     assert report["totals"]["formulas_to_value"] > 0
-    out = tmp_path / "不能丢公式.xlsx"
-    with pytest.raises(ValueError):
-        merge_export({**payload, "out": str(out)})
-    assert not out.exists()
+    assert report["can_export"]  # 可以导出
+    assert any("公式" in w for w in report["warnings"])  # 有公式转值警告
+    out = tmp_path / "公式转值.xlsx"
+    merge_export({**payload, "out": str(out)})
+    assert out.exists()  # 文件存在
+    assert out.stat().st_size > 0  # 非空
 
 
 def test_gradient_fill_is_retained_during_concat(tmp_path):

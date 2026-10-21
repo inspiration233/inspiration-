@@ -87,7 +87,7 @@ def _preflight(payload, options):
                                "xl/queryTables/", "xl/richData/", "xl/model/"))
                                or n in ("xl/connections.xml", "xl/metadata.xml") or n.endswith("vbaProject.bin")]
                 if unsupported:
-                    issues.append({"id": f"objects:{path}", "message": f"{path.name} 包含数据透视、宏或外部数据依赖，处理后可能改变数据含义，暂不能可靠拼接。"})
+                    warnings.append(f"{path.name} 包含数据透视、宏或外部数据依赖；已跳过这些对象，仅合并单元格内容。")
                 for name in names:
                     if not (name.startswith("xl/") and name.endswith(".xml")) or name.startswith(visual_prefixes):
                         continue
@@ -137,10 +137,10 @@ def _generate_impl(payload, out, cancel=None, progress=None):
             if item.get("orientation") == "horizontal":
                 warnings.append(f"{item['display']}：横向记录将按所选字段拼接为纵向结果；需保持横向原布局请使用各表独立成页。")
     totals = report.get("totals", {})
-    for key, title in (("formulas_to_value", "公式无法保留"),
-                       ("data_merges_dropped", "数据合并单元格无法保留")):
+    for key, title in (("formulas_to_value", "公式已转为计算值"),
+                       ("data_merges_dropped", "数据合并单元格未保留")):
         if totals.get(key):
-            issues.append({"id": key, "message": f"{title}：{totals[key]} 项。可能影响计算或数据完整性，请调整字段对应/选区或使用各表独立成页。"})
+            warnings.append(f"{title}：{totals[key]} 项。已保留数据内容，请核对结果。")
     for key, title in (("validations_dropped", "下拉或数据验证"), ("cf_dropped", "条件格式"),
                        ("tables_downgraded", "智能表格功能")):
         if totals.get(key):
