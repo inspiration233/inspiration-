@@ -23,10 +23,8 @@
     "金额只在每单位首行(合并单元格锚点)，子行金额为空",
     "纵向合并在拆分后应还原为该单位独立的合并"
   ],
-  "expected_monthly_summary": "人工核对：按月汇总W4的任务",
-  "expected_annual_update": "人工核对：全年表反映反馈变更",
   "verification_status": "未验证",
   "business_premise": "按项目整块拆走（子任务跟随项目），纵向合并保留",
   "expected_split": "每个单位一个文件，项目内子任务保持多行+纵向合并",
-  "incomplete_reason": "缺少反馈/月度/年度预期文件，仅为结构测试"
+  "incomplete_reason": "仅验证结构识别/拆分，不作为反馈、月度和年度完整流程金标准"
 }

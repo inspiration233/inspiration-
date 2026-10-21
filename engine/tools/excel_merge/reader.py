@@ -65,11 +65,21 @@ class TableSource:
 
     # ---- 数据行迭代（含表头之后的所有行，未做任何清理）----
     def iter_data_rows(self):
-        return self._reader.iter_data_rows(self)
+        selected = getattr(self, "selection", None)
+        for row_no, cells in self._reader.iter_data_rows(self):
+            if selected:
+                if not selected["data_start"] <= row_no <= selected["data_end"]:
+                    continue
+                cells = cells[selected["field_start"] - 1:selected["field_end"]]
+            yield row_no, cells
 
     # ---- 表头区快照（含单元格对象，供输出模板与样式复制）----
     def header_cells(self):
-        return self._reader.header_cells(self)
+        rows = self._reader.header_cells(self)
+        selected = getattr(self, "selection", None)
+        if selected:
+            return [row[selected["field_start"] - 1:selected["field_end"]] for row in rows]
+        return rows
 
 
 # --------------------------------------------------------------- CSV 编码探测
@@ -175,15 +185,20 @@ def xlsx_merge_ranges(path, sheet_name):
 # --------------------------------------------------------------- 各格式读取器
 
 class _XlsxReader:
-    def __init__(self, path):
+    def __init__(self, path, workbook=None):
         self.path = Path(path)
+        self._owns_workbook = workbook is None
+        if workbook is not None:
+            self.wb = workbook
+            return
         try:
             self.wb = load_workbook(self.path, read_only=True, data_only=True)
         except Exception as e:
             raise FileError(self.path, f"文件无法读取（{type(e).__name__}）") from e
 
     def close(self):
-        self.wb.close()
+        if self._owns_workbook:
+            self.wb.close()
 
     def sheets(self):
         return [(ws.title, ws.sheet_state == "visible") for ws in self.wb.worksheets]
@@ -209,6 +224,7 @@ class _XlsxReader:
         if force > 0:
             det = recognize.detect_header_row(window)
             header_row = force
+            height = recognize.detect_region_height(window, header_row, ranges)
         else:
             det = recognize.detect_header_row(window)
             header_row = det.header_row or 1

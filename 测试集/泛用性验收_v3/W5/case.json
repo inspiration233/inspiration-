@@ -13,15 +13,12 @@
       5,
       6
     ],
-    "total_tasks": 15,
-    "first_sheet_tasks": 4
+    "total_tasks": 15
   },
   "ambiguity": [
     "汇总时月份信息来自Sheet名而非列值，工具是否能正确提取"
   ],
-  "expected_monthly_summary": "人工核对：按月汇总W5的任务",
-  "expected_annual_update": "人工核对：全年表反映反馈变更",
   "verification_status": "未验证（需在Excel/WPS中人工打开核对）",
   "correction": "真值修正: 实际各Sheet任务数为{'1月': 4, '2月': 5, '3月': 6}",
-  "incomplete_reason": "缺少反馈/月度/年度预期文件，仅为结构测试"
+  "incomplete_reason": "仅验证结构识别/拆分，不作为反馈、月度和年度完整流程金标准"
 }

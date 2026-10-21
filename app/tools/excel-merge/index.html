@@ -1,137 +1,31 @@
-<!-- Excel 合并 · 工具视图（由壳注入） -->
-<div class="tool">
-  <div class="tool-head">
-    <button class="ghost" id="btn-back">← 返回</button>
-    <h1>Excel 合并</h1>
-  </div>
-
-  <!-- 文件区 -->
-  <section class="pane files-pane">
-    <div class="dropzone glass-2" id="dropzone">
-      <div class="dz-idle" id="dz-idle">
-        <div class="dz-arrow">⬇</div>
-        <div>拖入 Excel 文件或文件夹</div>
-        <div class="dz-btns">
-          <button id="btn-add-files">选择文件</button>
-          <button id="btn-add-folder">选择文件夹</button>
-        </div>
-        <div class="dz-hint">支持 .xlsx / .xls / .csv · GBK 自动识别</div>
-      </div>
-      <div class="dz-thin hidden" id="dz-thin">拖入继续添加</div>
-    </div>
-
-    <div class="file-list hidden" id="file-list-wrap">
-      <div class="list-head">
-        <span>文件列表（<b id="file-count">0</b>）</span>
-        <span>
-          <button class="ghost" id="btn-add-more">继续添加</button>
-          <button class="ghost danger" id="btn-clear">清空</button>
-        </span>
-      </div>
-      <div class="rows" id="file-rows"></div>
-      <div id="mode-reco" style="font-size:12px;color:var(--accent);padding:4px 2px"></div>
-    </div>
+<div class="excel-tool tool">
+  <header class="tool-head"><button class="ghost" id="btn-back" aria-label="返回工具箱">←</button><div><h1>Excel 工具</h1><p>在原表上选一下，确认结果，再导出。</p></div><span class="local-badge">本地处理</span></header>
+  <nav class="mode-tabs glass-2" aria-label="操作方式">
+    <button data-mode="merge" class="active"><b>合并</b><span>把多张表放到一起</span></button><button data-mode="split"><b>拆分</b><span>按选定内容分成文件</span></button><button data-mode="reconcile"><b>对照回填</b><span>把反馈写回，并标出变化</span></button>
+  </nav>
+  <div class="scheme-bar"><label for="scheme-select">复用方案</label><select id="scheme-select"><option value="">选择已保存的方案</option></select><button id="scheme-apply" class="ghost">应用</button><input id="scheme-name" type="text" placeholder="给本次设置起个名字" aria-label="方案名称" maxlength="80"><button id="scheme-save" class="ghost">保存方案</button><button id="scheme-delete" class="ghost" aria-label="删除所选方案">删除</button></div>
+  <div id="notice" class="notice hidden" role="status" aria-live="polite"></div>
+  <section class="source-card glass-2" id="dropzone">
+    <div class="section-line"><div><h2 id="source-title">1. 选择要合并的文件</h2><p id="source-help">拖入 Excel 文件或文件夹，也可以从电脑选择。</p></div><div class="button-row"><button id="btn-add-files">选择文件</button><button id="btn-add-folder" class="ghost">选择文件夹</button><button id="btn-clear" class="ghost">清空</button></div></div>
+    <div id="file-rows" class="file-rows"></div>
+    <div id="reconcile-sources" class="hidden secondary-sources"><div class="section-line"><b>反馈文件 <span id="feedback-count"></span></b><button id="btn-feedback">添加反馈</button></div><div id="feedback-rows" class="file-rows"></div><details><summary>另选一份原始版本，用于标出调整（可选）</summary><p class="hint">未选择时，与当前底表比较；选择后，与这份原始版本比较。</p><div class="button-row"><button id="btn-baseline">选择原始版本</button><span id="baseline-name">未选择</span><button id="btn-remove-baseline" class="ghost">移除</button></div></details></div>
   </section>
-
-  <!-- 合并设置（抽屉） -->
-  <section class="pane settings-pane hidden" id="settings">
-    <div class="settings-head" id="settings-head">合并设置 <span class="caret">▾</span></div>
-    <div class="settings-body hidden" id="settings-body">
-      <div class="set-group">
-        <div class="set-label">合并模式</div>
-        <div class="radio-cards" id="opt-mode">
-          <div class="radio-card sel" data-v="auto"><div class="t">自动</div><div class="d">按内容推荐·见体检</div></div>
-          <div class="radio-card" data-v="single"><div class="t">一张总表</div><div class="d">多文件按行追加</div></div>
-          <div class="radio-card" data-v="workbook"><div class="t">一个工作簿</div><div class="d">每表独立成页</div></div>
-          <div class="radio-card" data-v="sheets"><div class="t">文件内汇总</div><div class="d">多Sheet→一张表</div></div>
-          <div class="radio-card" data-v="group"><div class="t">同名Sheet分组</div><div class="d">按Sheet名合并</div></div>
-        </div>
-      </div>
-      <div class="set-group">
-        <div class="set-label">表头对齐</div>
-        <div class="radio-cards" id="opt-align">
-          <div class="radio-card sel" data-v="loose"><div class="t">宽容</div><div class="d">多收缺空（推荐）</div></div>
-          <div class="radio-card" data-v="strict"><div class="t">严格</div><div class="d">不一致即报错</div></div>
-        </div>
-      </div>
-      <div class="set-group">
-        <div class="set-label">输出模式</div>
-        <div class="radio-cards" id="opt-style">
-          <div class="radio-card sel" data-v="fidelity"><div class="t">原生保真</div><div class="d">公式/下拉/样式完整还原</div></div>
-          <div class="radio-card" data-v="fast"><div class="t">高速模式</div><div class="d">大数据量·输出缓存值</div></div>
-        </div>
-      </div>
-      <div class="set-group">
-        <div class="set-label">合并形态（复杂表前置区处理）</div>
-        <select id="opt-shape" style="width:100%">
-          <option value="auto">自动（按前置区共性推荐）</option>
-          <option value="stack">数据汇总（前置区共性取舍）</option>
-          <option value="append">完整表拼接（保形·前置区全保留）</option>
-        </select>
-      </div>
-      <div class="set-group two">
-        <div>
-          <div class="set-label">表头模板文件</div>
-          <select id="opt-template"></select>
-        </div>
-        <div>
-          <div class="set-label">表头行</div>
-          <div class="inline">
-            <select id="opt-header-auto">
-              <option value="0">自动探测</option>
-              <option value="1">手动指定</option>
-            </select>
-            <input type="number" id="opt-header-row" min="1" max="50" value="1" class="hidden">
-          </div>
-        </div>
-      </div>
-      <div class="set-group toggles">
-        <label><span class="switch on" id="opt-summary"></span>剔除合计/小计行</label>
-        <div class="kw-edit">关键词 <span class="chips" id="opt-keywords"></span>
-          <input type="text" id="kw-input" placeholder="回车添加" style="width:90px"></div>
-        <label><span class="switch" id="opt-source"></span>追加"来源"标记列</label>
-        <label><span class="switch" id="opt-hidden"></span>包含隐藏 Sheet</label>
-        <label><span class="switch" id="opt-title"></span>以第一个文件的标题作总表标题</label>
-        <label><span class="switch on" id="opt-serial-strip"></span>剔除仅有序号的空行</label>
-        <label><span class="switch on" id="opt-serial-num"></span>序号列自动重排（合并后连续编号）</label>
-      </div>
-    </div>
+  <section id="workspace" class="workspace glass-2 hidden">
+    <div class="section-line"><div><h2>2. 在原表上确认范围</h2><p id="source-caption"></p></div><div class="button-row"><label for="sheet-select">工作表</label><select id="sheet-select"></select><label id="sheet-enabled-wrap" class="check-label"><input id="sheet-enabled" type="checkbox" checked>参与合并</label></div></div>
+    <div class="range-bar"><label>记录方向 <select id="axis-select"><option value="rows">每行一条</option><option value="columns">每列一条</option></select></label><label>表头区域 <input id="header-range" type="text" placeholder="A3:F4" aria-label="表头区域"></label><button id="pick-header" class="ghost compact">在表上框选</button><label>数据区域 <input id="data-range" type="text" placeholder="A5:F80" aria-label="数据区域"></label><button id="pick-data" class="ghost compact">在表上框选</button><button id="apply-range">应用范围</button></div>
+    <div id="selection-hint" class="hint">可直接输入坐标；框选时，依次点区域左上角和右下角。</div><div id="field-toolbar" class="field-toolbar"></div><div id="grid-wrap" class="grid-wrap" tabindex="0" aria-label="原表预览"></div>
+    <div class="grid-footer"><span id="grid-status"></span><div class="button-row"><button id="page-left" class="ghost compact" aria-label="上一组列">← 列</button><button id="page-right" class="ghost compact" aria-label="下一组列">列 →</button><button id="page-prev" class="ghost compact">上一页</button><button id="page-next" class="ghost compact">下一页</button><label>跳到 <input id="jump-cell" type="text" placeholder="A1" aria-label="跳到单元格"></label><button id="jump-go" class="ghost compact">前往</button></div></div>
+    <div id="source-warnings" class="notice recognition-note hidden" role="status"></div><details id="mapping-details" class="mapping-details hidden"><summary>字段对应 <span id="mapping-summary"></span></summary><p class="hint">按完整表头自动对应，忽略全半角、大小写和多余空白。重名、改名或新字段，请在这里明确选择。</p><div id="mapping-review" class="notice hidden" role="status">表头发生变化，部分原有对应无法唯一恢复。请核对下方对应，再使用当前设置。<button id="mapping-reviewed" class="ghost compact">已核对当前字段对应</button></div><div id="mapping-table"></div></details>
   </section>
-
-  <!-- 操作条 -->
-  <div class="action-bar">
-    <button class="ghost" id="btn-settings-toggle">合并设置 ▾</button>
-    <button class="primary" id="btn-merge" disabled>合并 →</button>
-  </div>
-
-  <!-- 进行中 -->
-  <section class="pane progress-pane hidden" id="progress-pane">
-    <div class="prog-card glass-2 anim-rise">
-      <div class="prog-title">正在合并 <b id="prog-file">-</b></div>
-      <div class="prog-sub"><span id="prog-count">0 / 0</span> · 已写入 <span id="prog-rows">0</span> 行</div>
-      <div class="bar"><div class="bar-fill" id="prog-bar"></div></div>
-      <div class="cancel-zone hidden" id="cancel-zone">
-        <span>确认取消？输出将保留已完成部分</span>
-        <button id="btn-cancel-yes" class="danger">确认取消</button>
-        <button id="btn-cancel-no">继续</button>
-      </div>
-      <button id="btn-cancel" class="ghost">取消</button>
+  <section id="operation-options" class="option-card glass-2 hidden">
+    <div id="merge-options"><div class="section-line"><h2>想得到什么结果？</h2><span id="mode-reco" class="hint"></span></div><div id="merge-output" class="output-choices"><label><input type="radio" name="merge-output" value="auto" checked><b>自动安排</b><span>按文件和工作表结构推荐</span></label><label><input type="radio" name="merge-output" value="single"><b>一张总表</b><span>记录接在一起</span></label><label><input type="radio" name="merge-output" value="group"><b>同名表分别汇总</b><span>每类工作表保留一页</span></label><label><input type="radio" name="merge-output" value="workbook"><b>装入同一文件</b><span>各张工作表独立保留</span></label></div>
+      <details><summary>更多合并选项</summary><div class="advanced-grid"><label>以哪份排版为准 <select id="opt-template"></select></label><label>模板工作表 <select id="opt-template-sheet"></select></label><label>拼接方式 <select id="opt-shape"><option value="auto">自动</option><option value="stack">向下追加记录</option><option value="append">逐表完整拼接（保留各表标题和表头）</option></select></label><label>字段不完全相同时 <select id="opt-align"><option value="loose">保留全部字段</option><option value="strict">要求字段一致</option></select></label><label><input id="opt-hidden" type="checkbox">包含隐藏工作表</label><label><input id="opt-source" type="checkbox">增加来源说明列</label><label><input id="opt-summary" type="checkbox">删除含指定文字的汇总行</label><label>汇总行文字（逗号分隔）<input id="opt-keywords" type="text" value="合计,小计,总计,汇总,累计"></label><label><input id="opt-serial-strip" type="checkbox">删除识别出的序号行</label><label><input id="opt-serial-num" type="checkbox">重新编号</label><label><input id="opt-title" type="checkbox">把文件标题作为表头</label></div><p class="hint">默认保留内容、编号和原表样式。以上整理选项仅在主动开启后生效。</p></details>
     </div>
+    <div id="split-options" class="hidden"><div class="section-line"><h2>按什么拆分？</h2><span class="hint">点击原表的列头或行头即可选择字段</span></div><div id="group-chips" class="field-chips"></div><div class="button-row group-extras"><button id="pick-group-cell" class="ghost">按某个单元格的内容命名</button><label class="check-label"><input id="group-by-sheet" type="checkbox">加入工作表名</label><label>多个依据 <select id="group-mode"><option value="combination">按组合拆分</option><option value="recipients">分别分发（记录可重复）</option></select></label></div><details id="filters-details"><summary>只拆出一部分内容（可选） <span id="filter-count"></span></summary><div id="filter-rows"></div><button id="add-filter" class="ghost">＋ 添加筛选条件</button><p class="hint">所有条件同时满足才保留。月份可填 3 或 2026-03；区间条件以所选起止字段判断是否覆盖目标值。</p></details><details><summary>输出范围与空白归属（可选）</summary><label>分组字段为空时 <select id="blank-group"><option value="separate">单独归为一组</option><option value="previous">归到上一条非空记录的组</option></select></label><p class="hint">原单元格仍保持空白。若只想保留部分字段，可在原表上方切换到“输出字段”后点选；未选时保留全部。</p><div id="output-chips" class="field-chips"></div></details></div>
+    <div id="reconcile-options" class="hidden"><h2>怎样把反馈对应到底表？</h2><div class="role-summary"><div><b>对应同一条记录</b><div id="key-chips" class="field-chips"></div></div><div><b>允许回填的字段</b><div id="update-chips" class="field-chips"></div></div><div><b>调整后标红的字段</b><div id="compare-chips" class="field-chips"></div></div></div><p class="hint">先在原表上方选择用途，再点列头或行头。可组合多个字段对应记录；无需依赖固定的列名。</p><details id="filtered-details"><summary>同时导出筛选后的结果（可选）</summary><label class="check-label"><input type="checkbox" id="filtered-enabled">保留完整回填结果，另存一份筛选结果</label><p class="hint">例如：保留全年总表，同时导出当月情况。筛选在反馈回填完成之后进行。</p><div id="filtered-controls" class="hidden"><div id="filtered-rows"></div><button id="add-output-filter" class="ghost">＋ 添加筛选条件</button><p class="hint">如需同时缩减列或行，在原表上方切换到“筛选结果字段”后点选；未选时保留全部字段。</p><div id="filtered-field-chips" class="field-chips"></div></div></details></div>
   </section>
-
-  <!-- 结算 -->
-  <section class="pane done-pane hidden" id="done-pane">
-    <div class="done-card glass-2 anim-rise">
-      <div class="done-check" id="done-icon">✓</div>
-      <div class="done-title" id="done-title">合并完成</div>
-      <div class="done-stats" id="done-stats"></div>
-      <div class="done-out" id="done-out"></div>
-      <div class="done-btns">
-        <button class="primary" id="btn-open-folder">打开所在文件夹</button>
-        <button id="btn-report">查看完整报告</button>
-        <button id="btn-again">继续合并</button>
-      </div>
-      <div class="report hidden" id="report-detail"></div>
-    </div>
-  </section>
+  <div id="actionbar" class="actionbar"><span id="action-hint">先选择文件</span><button id="btn-preview" class="primary" disabled>预览结果</button></div>
+  <section id="result-pane" class="result-pane glass-2 hidden"><div class="section-line"><div><h2>3. 核对结果</h2><p id="result-summary"></p></div><button id="btn-export" class="primary" disabled>确认并导出</button></div><div id="result-warnings" class="notice compatibility-note hidden" role="status"></div><div id="issues-panel" class="issues-panel hidden"></div><div id="result-samples"></div><div id="result-changes"></div><div id="missing-records" class="hint"></div></section>
+  <section id="progress-pane" class="pane hidden" aria-live="polite"><div class="progress-card glass-2"><div class="spinner"></div><h2 id="progress-title">正在处理…</h2><p id="prog-file"></p><div class="bar"><div id="prog-bar" class="bar-fill"></div></div><p id="prog-count"></p><button id="btn-cancel" class="ghost">取消处理</button></div></section>
+  <section id="done-pane" class="pane hidden"><div class="done-card glass-2"><div class="done-check" id="done-icon">✓</div><h2 id="done-title">导出完成</h2><p id="done-stats"></p><div id="done-out" class="done-out"></div><details id="done-warnings" class="compatibility-note hidden" open><summary id="done-warnings-title">兼容与处理提示</summary><ul id="done-warnings-list"></ul></details><div class="button-row"><button id="btn-open-folder" class="primary">打开所在位置</button><button id="btn-again">继续处理</button><button id="btn-report" class="ghost">查看报告</button></div><pre id="report-detail" class="hidden"></pre></div></section>
 </div>

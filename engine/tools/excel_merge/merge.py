@@ -13,7 +13,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from . import reader as rd
-from .align import AlignError, align_sources
+from .align import AlignError, align_sources, key_parts
 from .recognize import (DEFAULT_SUMMARY_KEYWORDS, MergeRange, is_numberlike,
                        is_summary_row, normalize_name)
 from .writer import OutputBook, XLSX_MAX_ROWS
@@ -42,6 +42,13 @@ class Options:
     include_hidden: bool = False
     title_as_header: bool = False           # 以模板标题作总表标题（默认关）
     force_header_row: int = 0               # 0=自动探测
+    selections: list = field(default_factory=list)
+    preserve_blank_rows: bool = False       # 新工作台默认开启；兼容旧 CLI
+    preserve_template_preamble: bool = False
+    metadata_columns: bool = True
+    exact_headers: bool = False
+    template_path: str = ""
+    template_sheet: str = ""
 
 
 @dataclass
@@ -113,10 +120,10 @@ def scan(paths, options=None):
                     entry.sheets.append({"sheet": skip_reason, "skipped": True})
                     report["totals"]["hidden_sheets_skipped"] += 1
                     continue
-                if src.display in ov:            # 手动指定方向 → 按覆盖重建结构
+                if src.display in ov or options.force_header_row:
                     src.structure = reader.build_structure(
                         src.structure.sheet_name, options.force_header_row,
-                        ov[src.display])
+                        ov.get(src.display))
                 entry.sheets.append(_sheet_record(src))
                 report["header_detections"].append(_sheet_record(src))
     finally:
@@ -156,6 +163,14 @@ def merge(paths, out_path, options=None, progress=None, cancel=None):
                     continue
                 if len(real_tables) <= 1:
                     src.display = Path(p).stem    # 单 Sheet 文件: 来源只记文件名
+                from .selection import source_spec, apply_selection
+                spec = source_spec(options, p, src.sheet_name)
+                if spec is False:
+                    continue
+                override = options.orientation_overrides.get(src.display)
+                if override or options.force_header_row:
+                    src.structure = reader.build_structure(src.sheet_name, options.force_header_row, override)
+                apply_selection(src, spec)
                 rec = _sheet_record(src)
                 entry.sheets.append(rec)
                 report["header_detections"].append(rec)
@@ -167,6 +182,15 @@ def merge(paths, out_path, options=None, progress=None, cancel=None):
                     continue
                 sources.append(src)
 
+        if options.template_path:
+            resolved_template = Path(options.template_path).resolve()
+            template = next((s for s in sources if Path(s.path).resolve() == resolved_template
+                             and s.sheet_name == options.template_sheet), None)
+            if template is None:
+                raise ValueError("所选版式参考表不在合并来源中，请重新选择")
+            options.template_index = sources.index(template)
+        from .selection import apply_field_maps
+        apply_field_maps(sources, options.template_index)
         usable = [s for s in sources if not _is_empty_source(s)]
         for s in sources:
             if _is_empty_source(s):
@@ -185,7 +209,9 @@ def merge(paths, out_path, options=None, progress=None, cancel=None):
             return (frozenset(s.structure.keys), s.structure.height)
 
         def _seg_set(s):
-            return {k.rsplit("/", 1)[-1] for k in s.structure.keys}
+            signatures = getattr(s.structure, "key_signatures", None)
+            return {key_parts(k, signature=signatures is not None)[-1]
+                    for k in (signatures if signatures is not None else s.structure.keys)}
 
         def _by_signature(sources):
             # 末段键重叠度聚类: >50% 视为同构(宽容对齐可处理小差异),
@@ -250,7 +276,9 @@ def merge(paths, out_path, options=None, progress=None, cancel=None):
             book = fid.FidelityBook(out_path)
             try:
                 for name, grp, shape in groups:
-                    fid.merge_group_fidelity(book, grp, options, 0, report,
+                    reference = sources[min(options.template_index, len(sources) - 1)]
+                    group_template = grp.index(reference) if reference in grp else 0
+                    fid.merge_group_fidelity(book, grp, options, group_template, report,
                                              progress, cancel, base_name=name,
                                              shape=shape)
                 book.save()
@@ -378,7 +406,7 @@ def _merge_group(book, group, options, template_index, report, progress, cancel,
             if cancel and cancel():
                 raise Cancelled()
             values = [getattr(c, "value", c) for c in cells]
-            if all(v in (None, "") for v in values):
+            if all(v in (None, "") for v in values) and not options.preserve_blank_rows:
                 totals["empty_rows_skipped"] += 1
                 continue
             if options.strip_serial_rows:

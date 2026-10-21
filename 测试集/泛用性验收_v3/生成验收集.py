@@ -831,7 +831,10 @@ def main():
             continue
         d = ROOT / cid
         if d.exists():
-            shutil.rmtree(d)
+            target = d.resolve()
+            if target.parent != ROOT.resolve() or target.name not in CASES:
+                raise ValueError(f"拒绝重建测试集之外的目录: {target}")
+            shutil.rmtree(target)
         CASES[cid](d)
         files = list(d.rglob("*.xlsx")) + list(d.rglob("*.json"))
         generated.append((cid, len(files)))

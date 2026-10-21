@@ -7,11 +7,18 @@ contextBridge.exposeInMainWorld('toolbox', {
   selectFolder: () => ipcRenderer.invoke('dlg:folder'),
   expandPaths: (paths) => ipcRenderer.invoke('paths:expand', paths),
   saveDialog: (defaultName) => ipcRenderer.invoke('dlg:save', defaultName),
+  selectOutputFolder: () => ipcRenderer.invoke('dlg:output-folder'),
   showInFolder: (p) => ipcRenderer.invoke('open:show', p),
   pathForFile: (file) => webUtils.getPathForFile(file),   // Electron 33: File.path 已移除
   // 引擎
   scan: (payload) => ipcRenderer.invoke('engine:scan', payload),
   merge: (payload) => ipcRenderer.invoke('engine:merge', payload),
+  preview: (payload) => ipcRenderer.invoke('engine:preview', payload),
+  mergePreview: (payload) => ipcRenderer.invoke('engine:merge_preview', payload),
+  splitPreview: (payload) => ipcRenderer.invoke('engine:split_preview', payload),
+  split: (payload) => ipcRenderer.invoke('engine:split', payload),
+  reconcilePreview: (payload) => ipcRenderer.invoke('engine:reconcile_preview', payload),
+  reconcile: (payload) => ipcRenderer.invoke('engine:reconcile', payload),
   cancel: () => ipcRenderer.send('engine:cancel'),
   onProgress: (cb) => {
     const h = (_e, msg) => cb(msg);

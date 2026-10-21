@@ -366,7 +366,10 @@ if __name__ == "__main__":
     for cid, fn in NEW_CASES.items():
         d = ROOT / cid
         if d.exists():
-            shutil.rmtree(d)
+            target = d.resolve()
+            if target.parent != ROOT.resolve() or target.name not in NEW_CASES:
+                raise ValueError(f"拒绝重建测试集之外的目录: {target}")
+            shutil.rmtree(target)
         fn(d)
         n = len(list(d.glob("*.xlsx"))) + len(list(d.glob("*.json")))
         print(f"✓ {cid} ({n}个文件)")

@@ -1,8 +1,8 @@
 {
   "id": "excel-merge",
-  "name": "Excel 合并",
+  "name": "Excel 工具",
   "icon": "▦",
-  "description": "多文件汇总 / 多 Sheet 合并 / 表头智能识别",
+  "description": "合并 · 拆分 · 对照回填，点选原表即可处理",
   "view": "tools/excel-merge/index.html",
   "script": "tools/excel-merge/tool.js",
   "css": "tools/excel-merge/tool.css",

@@ -1,12 +1,13 @@
 {
   "name": "team-toolbox",
   "productName": "工具箱",
-  "version": "0.1.0",
-  "description": "团队本地工具箱（第一个工具：Excel 合并）",
+  "version": "0.2.0",
+  "description": "本地 Excel 工作台：原生合并、拆分与对照回填",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "smoke": "electron . --smoke"
+    "smoke": "electron . --smoke",
+    "test:ui": "electron . --workbench-test"
   },
   "devDependencies": {
     "electron": "^33.2.0"

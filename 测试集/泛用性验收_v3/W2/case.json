@@ -19,28 +19,48 @@
     "months": 12
   },
   "expected_split": "每个单位4行任务，保留月份列+合计公式",
-  "ambiguity": [
-    "合计行是否应包含在拆分文件中（原始表最后一行是跨单位合计）"
-  ],
+  "ambiguity": [],
   "invariants": [
-    "合计公式=SUM(C:N)范围正确",
-    "月份数值不变"
+    "除财务部组织安全培训演练1月18→99外，所有任务和月份值保持原始值",
+    "财务部反馈2月为34，不能残留上一轮误改的99",
+    "拆分/反馈行合计引用B:M；年度行合计引用C:N，原始总计公式保留"
   ],
-  "expected_monthly_summary": "人工核对：按月汇总W2的任务",
-  "expected_annual_update": "人工核对：全年表反映反馈变更",
-  "verification_status": "未验证（需人工在Excel中核对公式和数值）",
+  "verification_status": "待独立自检；Excel/WPS显示效果未人工验收",
   "expected_changes": [
     {
+      "unit": "财务部",
       "task": "组织安全培训演练",
-      "field": "1月数量(B列)",
-      "old": "原值",
-      "new": 99,
-      "unit": "财务部"
+      "field": "1月数量",
+      "old": 18,
+      "new": 99
     }
   ],
-  "expected_monthly": "1月汇总中财务部'组织安全培训演练'数量=99",
-  "expected_annual": "全年合计公式包含新数量",
-  "business_premise": "以起始月归入月度汇总；横向月份按列值直接读取",
-  "structure_note": "横向月份表，A列单位用分组(首行有值)，自检的单位一致性检查不适用",
-  "correction": "修正：B列=1月（非C列=2月），任务='组织安全培训演练'（非'预算'）"
+  "business_premise": "横向月份按列标题读取；本案例提取1月。单位在合并区域内继承，全年保留原始总计。",
+  "artifacts": {
+    "original": [
+      "W2_原始_横向月份.xlsx"
+    ],
+    "split": [
+      "W2_拆分_综合办公室.xlsx",
+      "W2_拆分_财务部.xlsx",
+      "W2_拆分_工程技术部.xlsx"
+    ],
+    "feedback": [
+      "W2_反馈_财务部.xlsx"
+    ],
+    "expected_monthly": [
+      "W2_预期_1月汇总.xlsx"
+    ],
+    "expected_annual": [
+      "W2_预期_全年更新.xlsx"
+    ]
+  },
+  "selection": {
+    "target_year": 2026,
+    "target_month": 1,
+    "month_source": "column_header",
+    "month_rule": "exact_month",
+    "snapshot": "after_feedback"
+  },
+  "summary_policy": "本案例单位拆分不包含跨单位总计；年度更新保留原始总计及公式"
 }

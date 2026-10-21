@@ -12,7 +12,11 @@ const IS_SMOKE = process.argv.includes('--smoke');
 // 已知问题缓解: Windows 下窗口遮挡计算会造成还原/缩放白闪
 app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
 const themeBg = () => (nativeTheme.shouldUseDarkColors ? '#0f1420' : '#eef1f7');
-const IS_UITEST = process.argv.includes('--uitest');
+const IS_WORKBENCH_TEST = process.argv.includes('--workbench-test') || process.argv.includes('--uitest');
+if (IS_WORKBENCH_TEST || IS_SMOKE) {
+  const os = require('os');
+  app.setPath('userData', fs.mkdtempSync(path.join(os.tmpdir(), 'excel-workbench-ui-')));
+}
 
 let win = null;
 let sidecar = null;
@@ -23,11 +27,13 @@ let waiting = null;                                      // 当前等待应答�
 // ---------------------------------------------------------------- sidecar
 
 function startSidecar() {
-  sidecar = spawn(PYTHON, ['-m', 'engine.sidecar'], {
+  const processHandle = spawn(PYTHON, ['-m', 'engine.sidecar'], {
     cwd: ROOT,
     env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
     stdio: ['pipe', 'pipe', 'pipe'],
   });
+  sidecar = processHandle;
+  sidecarBuf = '';
   sidecar.stdout.setEncoding('utf8');
   sidecar.stdout.on('data', (chunk) => {
     sidecarBuf += chunk;
@@ -51,15 +57,33 @@ function startSidecar() {
     }
   });
   sidecar.stderr.on('data', (d) => console.error('[sidecar]', String(d).trim()));
-  sidecar.on('exit', (code) => { sidecar = null; });
+  const fail = (message) => {
+    if (sidecar !== processHandle) return;
+    sidecar = null;
+    sidecarBuf = '';
+    const active = waiting;
+    waiting = null;
+    active?.({ evt: 'error', code: 'engine_unavailable', msg: message });
+    while (pending.length) pending.shift().resolve({ evt: 'error', code: 'engine_unavailable', msg: message });
+  };
+  sidecar.on('error', (error) => fail(`无法启动 Python 引擎：${error.message}。请检查 TOOLBOX_PYTHON 或 Python 依赖。`));
+  sidecar.on('exit', (code) => fail(`Python 引擎已退出（${code ?? '已终止'}），请重试。`));
 }
 
 function engineSend(obj) {
   return new Promise((resolve) => {
     const launch = () => {
+      if (!sidecar) startSidecar();
       waiting = resolve;
-      sidecar.stdin.write(JSON.stringify(obj) + '\n');
+      sidecar.stdin.write(JSON.stringify(obj) + '\n', (error) => {
+        if (error && waiting === resolve) {
+          waiting = null;
+          resolve({ evt: 'error', code: 'engine_write', msg: error.message });
+          drainNext();
+        }
+      });
     };
+    launch.resolve = resolve;
     if (waiting === null && !pending.length) {
       if (!sidecar) startSidecar();
       launch();
@@ -102,90 +126,22 @@ function createWindow() {
     },
   });
   win.loadFile(path.join(__dirname, 'shell', 'index.html'));
-  win.once('ready-to-show', () => win.show());
+  win.once('ready-to-show', () => { if (!IS_WORKBENCH_TEST && !IS_SMOKE) win.show(); });
 
-  if (IS_UITEST) {
-    const errors = [];
-    win.webContents.on('console-message', (_e, level, message) => {
-      if (level >= 2 && !/GPU|command_buffer|EGL|ANGLE|GLES/i.test(message)) {
-        errors.push(message);
-      }
-    });
-    const p1 = JSON.stringify(path.join(ROOT, '测试集', '场景E_表头智能识别', '报表_甲.xlsx'));
-    const p2 = JSON.stringify(path.join(ROOT, '测试集', '场景E_表头智能识别', '报表_丙.csv'));
-    const pDir = JSON.stringify(path.join(ROOT, '测试集', '场景A_多文件纵向合并'));
-    const out = JSON.stringify(path.join(ROOT, '_uitest_out.xlsx'));
-    const shot = (name) => win.webContents.capturePage().then((img) => {
-      fs.writeFileSync(path.join(ROOT, name), img.toPNG());
-    });
-    win.webContents.on('did-finish-load', async () => {
+  if (IS_WORKBENCH_TEST) {
+    win.webContents.once('did-finish-load', async () => {
       try {
-        const r1 = await win.webContents.executeJavaScript(`(async () => {
-          const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
-          document.querySelector('.tool-card')?.click();
-          await sleep(700);
-          const T = window.__emTest;
-          if (!T) return 'no-hook';
-          // 回归防线: 状态面板初始必须真的隐藏(渲染层面)
-          const dn = getComputedStyle(document.querySelector('#done-pane')).display;
-          if (dn !== 'none') return 'done-pane-visible(display=' + dn + ')';
-          const pp = getComputedStyle(document.querySelector('#progress-pane')).display;
-          if (pp !== 'none') return 'progress-pane-visible(display=' + pp + ')';
-          T.addPaths({ files: [${p1}, ${p2}] });
-          for (let i = 0; i < 20; i++) {           // 等体检回填
-            await sleep(300);
-            const metas = [...document.querySelectorAll('.file-row .meta')];
-            if (metas.length === 2 && metas.every((m) => !m.textContent.includes('识别中'))) break;
-          }
-          const rows = document.querySelectorAll('.file-row');
-          if (rows.length !== 2) return 'rows=' + rows.length;
-          const okMeta = document.querySelector('.file-row .meta.ok');
-          if (!okMeta) return 'scan-not-applied';
-          if (!okMeta.textContent.includes('表头第3行')) return 'meta=' + okMeta.textContent;
-          // 文件夹展开（"选择文件夹"按钮同路径）：场景A 目录应扫出 6 个表格文件
-          const exp = await window.toolbox.expandPaths([${pDir}]);
-          if (exp.files.length !== 8) return 'folder-expand=' + exp.files.length;
-          // 抽屉展开：无遮挡（action-bar 不得压住抽屉内容）、无截断
-          document.querySelector('#settings-head').click();
-          await sleep(500);
-          const sBody = document.querySelector('#settings-body');
-          const aBar = document.querySelector('.action-bar');
-          if (aBar.getBoundingClientRect().top < sBody.getBoundingClientRect().bottom - 2) return 'drawer-overlap';
-          if (sBody.clientHeight < sBody.scrollHeight - 2) return 'drawer-clipped';
-          return 'PHASE1-OK';  // 抽屉保持展开，供截屏核验
-        })()`);
-        if (r1 !== 'PHASE1-OK') { console.log('UITEST-FAIL ' + r1); app.exit(1); return; }
-        await shot('_uitest_1_filelist.png');
-        const r2 = await win.webContents.executeJavaScript(`(async () => {
-          const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
-          document.querySelector('#settings-head')?.click();     // 收回抽屉
-          await sleep(300);
-          const ok = await window.__emTest.startMerge(${out});   // 真实合并
-          if (!ok) return 'merge-failed';
-          for (let i = 0; i < 60; i++) {
-            await sleep(500);
-            if (!document.querySelector('#done-pane').classList.contains('hidden')) break;
-          }
-          if (document.querySelector('#done-pane').classList.contains('hidden')) return 'no-done-pane';
-          return 'DONE:' + document.querySelector('#done-stats').textContent;
-        })()`);
-        await shot('_uitest_2_done.png');
-        const r = r2;
-        const pass = typeof r === 'string' && r.startsWith('DONE:') && r.includes('写入');
-        if (errors.length) {
-          console.log('UITEST-FAIL(控制台错误): ' + errors.join(' | '));
-          app.exit(1);
-        } else {
-          console.log(pass ? 'UITEST-OK ' + r.slice(5) : 'UITEST-FAIL ' + r);
-          app.exit(pass ? 0 : 1);
-        }
-      } catch (e) {
-        console.log('UITEST-FAIL: ' + e);
+        const result = await require('./workbench-smoke').run(win, ROOT);
+        console.log('WORKBENCH-OK ' + JSON.stringify(result));
+        app.exit(0);
+      } catch (error) {
+        console.error('WORKBENCH-FAIL ' + (error.stack || error));
         app.exit(1);
       }
     });
   }
-  if (IS_SMOKE) {
+
+  if (IS_SMOKE && !IS_WORKBENCH_TEST) {
     const errors = [];
     win.webContents.on('console-message', (_e, level, message) => {
       if (level >= 2 && !/GPU|command_buffer|EGL|ANGLE|GLES/i.test(message)) {
@@ -227,14 +183,18 @@ ipcMain.handle('paths:expand', async (_e, paths) => {
   const files = [];
   let skipped = 0;
   const seen = new Set();
+  const seenDirs = new Set();
   const visit = (p) => {
     let st;
     try { st = fs.statSync(p); } catch { skipped += 1; return; }
     if (st.isDirectory()) {
+      const real = fs.realpathSync(p).toLowerCase();
+      if (seenDirs.has(real)) return;
+      seenDirs.add(real);
       let names = [];
       try { names = fs.readdirSync(p); } catch { return; }
       names.forEach((n) => visit(path.join(p, n)));
-    } else if (TABLE_EXTS.has(path.extname(p).toLowerCase())) {
+    } else if (TABLE_EXTS.has(path.extname(p).toLowerCase()) && !path.basename(p).startsWith('~$')) {
       const key = path.resolve(p).toLowerCase();
       if (!seen.has(key)) { seen.add(key); files.push(p); }
     } else {
@@ -247,7 +207,7 @@ ipcMain.handle('paths:expand', async (_e, paths) => {
 
 ipcMain.handle('dlg:files', async () => {
   const r = await dialog.showOpenDialog(win, {
-    title: '选择要合并的文件',
+    title: '选择表格文件',
     properties: ['openFile', 'multiSelections'],
     filters: [{ name: '表格文件', extensions: ['xlsx', 'xls', 'csv'] }],
   });
@@ -264,15 +224,24 @@ ipcMain.handle('dlg:folder', async () => {
 
 ipcMain.handle('dlg:save', async (_e, defaultName) => {
   const r = await dialog.showSaveDialog(win, {
-    title: '合并结果保存为',
+    title: '结果保存为',
     defaultPath: defaultName,
     filters: [{ name: 'Excel 工作簿', extensions: ['xlsx'] }],
   });
   return r.canceled ? null : r.filePath;
 });
 
+ipcMain.handle('dlg:output-folder', async () => {
+  const r = await dialog.showOpenDialog(win, {
+    title: '选择拆分结果保存位置', properties: ['openDirectory', 'createDirectory'],
+  });
+  return r.canceled ? null : r.filePaths[0];
+});
 ipcMain.handle('engine:scan', (_e, payload) => engineSend({ tool: 'excel_merge', cmd: 'scan', ...payload }));
-ipcMain.handle('engine:merge', (_e, payload) => engineSend({ tool: 'excel_merge', cmd: 'merge', ...payload }));
+ipcMain.handle('engine:merge', (_e, payload) => engineSend({ ...payload, tool: 'excel_merge', cmd: 'merge', workbench: true }));
+for (const cmd of ['preview', 'merge_preview', 'split_preview', 'split', 'reconcile_preview', 'reconcile']) {
+  ipcMain.handle(`engine:${cmd}`, (_e, payload) => engineSend({ ...payload, tool: 'excel_merge', cmd }));
+}
 ipcMain.on('engine:cancel', () => {
   if (sidecar) sidecar.stdin.write('{"cmd":"cancel"}\n');
 });

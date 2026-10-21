@@ -113,8 +113,8 @@
     // v0.1: 清单列表内置（编译期接入；后续读取 manifests 目录）
     manifests = [
       {
-        id: 'excel-merge', name: 'Excel 合并', icon: '▦',
-        description: '多文件汇总 / 多 Sheet 合并 / 表头智能识别',
+        id: 'excel-merge', name: 'Excel 工具', icon: '▦',
+        description: '合并 · 拆分 · 对照回填，点选原表即可处理',
         view: '../tools/excel-merge/index.html',
         script: '../tools/excel-merge/tool.js',
         css: '../tools/excel-merge/tool.css',
@@ -132,7 +132,7 @@
           <option value="auto">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option>
         </select></span></div>
       <div class="kv"><span>减少动效（含材质降级）</span><span><span class="switch" id="set-motion"></span></span></div>
-      <div class="sub" style="margin-top:16px">各工具的专属设置在工具页内的"合并设置"里。</div>`;
+      <div class="sub" style="margin-top:16px">各工具的专属选项会按当前操作显示在工具页内。</div>`;
     overlay.classList.remove('hidden');
     const sel = overlayPanel.querySelector('#set-theme');
     sel.value = savedTheme;
@@ -154,7 +154,7 @@
       <h2>关于</h2>
       <div class="sub">团队本地工具箱</div>
       <div class="kv"><span>工具箱版本</span><span>v${info.appVersion}</span></div>
-      <div class="kv"><span>Excel 合并 引擎</span><span>M1 (sidecar)</span></div>
+      <div class="kv"><span>Excel 处理引擎</span><span>M1 (sidecar)</span></div>
       <div class="kv"><span>平台</span><span>${info.platform} · Electron ${info.electron}</span></div>
       <div class="sub" style="margin-top:14px">完全离线运行，文件不出本机。检查更新请访问内部渠道。</div>`;
     overlay.classList.remove('hidden');

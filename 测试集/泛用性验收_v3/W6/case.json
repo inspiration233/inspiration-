@@ -44,22 +44,73 @@
       "new": "5月→5月"
     }
   },
-  "ambiguity": [
-    "跨月任务(C002 2-5月)应归入哪个月份的汇总——起始月？结束月？每个月都算？"
-  ],
+  "ambiguity": [],
   "invariants": [
-    "C001/C002/C004 不变",
-    "月份调整后C003的数量不变"
+    "C001/C002/C004全部字段不变，C003数量仍为5",
+    "反馈后C003只出现在5月，3月无任务，不重复计入3月和5月"
   ],
-  "expected_monthly_summary": "人工核对：按月汇总W6的任务",
-  "expected_annual_update": "C003起始月3→5、结束月3→5，其余任务不变",
-  "verification_status": "未验证",
-  "business_premise": "跨月任务按起始月归入月度汇总（测试假设，非产品最终口径）",
-  "expected_monthly": {
-    "1月": "C001(起始1月)",
-    "2月": "C002(起始2月)",
-    "3月": "C003(起始3月，调整后移至5月)",
-    "4月": "C004(起始4月)",
-    "5月": "调整后的C003(起始月变为5月)"
+  "verification_status": "待独立自检；Excel/WPS显示效果未人工验收",
+  "business_premise": "跨月任务按起始月归入月度汇总；这是本测试假设，非产品最终口径。所有预期均为反馈后快照。",
+  "artifacts": {
+    "original": [
+      "W6_原始_跨月.xlsx"
+    ],
+    "split": [
+      "W6_拆分_财务部.xlsx",
+      "W6_拆分_工程技术部.xlsx",
+      "W6_拆分_安全管理部.xlsx",
+      "W6_拆分_市场营销部.xlsx"
+    ],
+    "feedback": [
+      "W6_反馈_月份调整.xlsx"
+    ],
+    "expected_monthly": [
+      "W6_预期_月度汇总.xlsx"
+    ],
+    "expected_annual": [
+      "W6_预期_全年更新.xlsx"
+    ]
+  },
+  "selection": {
+    "target_year": 2026,
+    "target_months": [
+      1,
+      2,
+      3,
+      4,
+      5
+    ],
+    "month_source": "起始月",
+    "month_rule": "start_month",
+    "snapshot": "after_feedback"
+  },
+  "expected_changes": [
+    {
+      "task_id": "C003",
+      "field": "起始月",
+      "old": "3月",
+      "new": "5月"
+    },
+    {
+      "task_id": "C003",
+      "field": "结束月",
+      "old": "3月",
+      "new": "5月"
+    }
+  ],
+  "expected_monthly_ids": {
+    "1月": [
+      "C001"
+    ],
+    "2月": [
+      "C002"
+    ],
+    "3月": [],
+    "4月": [
+      "C004"
+    ],
+    "5月": [
+      "C003"
+    ]
   }
 }

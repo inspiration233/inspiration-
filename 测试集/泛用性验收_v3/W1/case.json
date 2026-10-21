@@ -25,7 +25,7 @@
       "安全管理部": 2,
       "市场营销部": 2
     },
-    "june_tasks": 2
+    "june_tasks": 1
   },
   "expected_split": "每个单位一个文件，只含该单位任务",
   "expected_monthly": "6月汇总含原有6月任务+新增T999",
@@ -61,145 +61,329 @@
     "预算金额公式=E*100语义不变",
     "状态下拉可选值不变"
   ],
-  "corrections": [
-    "T999公式修正为引用自身行E列",
-    "T002预算修正为公式=E*100(非硬编码2000)",
-    "拆分文件补齐冻结/下拉/条件格式/列宽",
-    "预期汇总补齐冻结/列宽"
-  ],
   "fidelity_requirements": {
-    "前置区": "原始表3行前置区在拆分后应保留",
-    "下拉": "状态下拉(进行中/已完成/已取消)在拆分和更新后保留",
-    "条件格式": "已完成=绿色填充在拆分和更新后保留",
-    "冻结": "冻结窗格在拆分和更新后保留",
-    "列宽": "原始列宽在拆分和更新后保留",
-    "公式": "预算金额=E*100公式语义不变"
+    "前置区和表头": "完整保留原表第1-4行，数据统一从第5行开始",
+    "样式": "全部源属性按原任务ID复制；新增任务使用契约指定的参考行",
+    "下拉和条件格式": "复制原表完整规则，范围仅覆盖实际数据行；不得重复",
+    "冻结": "与原表一致：'A5'",
+    "公式": "=E{row}*100，row 为每条任务的实际输出行"
   },
-  "fidelity_check_results": {
-    "W1_拆分_安全管理部": {
-      "all_pass": true,
-      "details": {
-        "冻结": {
-          "value": "A2",
-          "pass": true
-        },
-        "下拉": {
-          "value": "2个",
-          "pass": true
-        },
-        "条件格式": {
-          "value": "1个",
-          "pass": true
-        },
-        "列宽": {
-          "value": "A=10.0",
-          "pass": true
-        },
-        "公式": {
-          "value": "=E2*100",
-          "pass": true
+  "expected_monthly_ids": {
+    "6月": [
+      "T006",
+      "T999"
+    ]
+  },
+  "selection": {
+    "target_year": 2026,
+    "target_month": 6,
+    "month_rule": "exact_month",
+    "month_source": "月份",
+    "snapshot": "after_feedback"
+  },
+  "artifacts": {
+    "original": [
+      "W1_原始计划表.xlsx"
+    ],
+    "split": [
+      "W1_拆分_综合办公室.xlsx",
+      "W1_拆分_财务部.xlsx",
+      "W1_拆分_工程技术部.xlsx",
+      "W1_拆分_安全管理部.xlsx",
+      "W1_拆分_市场营销部.xlsx"
+    ],
+    "feedback": [
+      "W1_反馈_财务部.xlsx",
+      "W1_反馈_工程技术部.xlsx",
+      "W1_反馈_市场营销部.xlsx"
+    ],
+    "expected_monthly": [
+      "W1_预期_6月汇总.xlsx"
+    ],
+    "expected_annual": [
+      "W1_预期_全年更新.xlsx"
+    ]
+  },
+  "fidelity_contract": {
+    "version": 1,
+    "source_file": "W1_原始计划表.xlsx",
+    "source_sheet": "年度计划",
+    "preserved_header_rows": [
+      1,
+      2,
+      3,
+      4
+    ],
+    "data_start_row": 5,
+    "header_merges": [
+      "A1:G1",
+      "A2:G2",
+      "A3:G3"
+    ],
+    "freeze_panes": "A5",
+    "column_dimensions": "全部与原表一致（含默认值、宽度、隐藏及分组属性）",
+    "row_dimensions": "前4行原样；已有任务按ID取原表行，新任务按指定参考ID",
+    "cell_styles": "表头和数据行全部样式属性按原表复制，含字体/填充/数字格式",
+    "print_settings": "与原表一致，含页面设置、页边距、页眉页脚及打印范围",
+    "derived_formula_column": 6,
+    "derived_formula": "=E{row}*100",
+    "new_task_format_source_id": "T001",
+    "empty_data_policy": "只保留原表前4行，不创建空的数据验证或条件格式范围",
+    "rules": {
+      "data_validations": [
+        {
+          "type": "list",
+          "operator": null,
+          "formula1": "\"进行中,已完成,已取消\"",
+          "formula2": null,
+          "allow_blank": true,
+          "show_error_message": false,
+          "source_range": "G5:G16"
         }
-      }
+      ],
+      "conditional_formats": [
+        {
+          "type": "cellIs",
+          "operator": "equal",
+          "formula": [
+            "\"已完成\""
+          ],
+          "source_range": "G5:G16",
+          "fill_rgb": "00C6EFCE"
+        }
+      ]
     },
-    "W1_拆分_工程技术部": {
-      "all_pass": true,
-      "details": {
-        "冻结": {
-          "value": "A2",
-          "pass": true
+    "files": [
+      {
+        "file": "W1_拆分_综合办公室.xlsx",
+        "sheet": "综合办公室",
+        "header_range": "A1:G4",
+        "data_range": "A5:G7",
+        "task_ids": [
+          "T001",
+          "T006",
+          "T011"
+        ],
+        "style_source_ids": {
+          "T001": "T001",
+          "T006": "T006",
+          "T011": "T011"
         },
-        "下拉": {
-          "value": "2个",
-          "pass": true
+        "data_validation_ranges": [
+          "G5:G7"
+        ],
+        "conditional_format_ranges": [
+          "G5:G7"
+        ]
+      },
+      {
+        "file": "W1_拆分_财务部.xlsx",
+        "sheet": "财务部",
+        "header_range": "A1:G4",
+        "data_range": "A5:G7",
+        "task_ids": [
+          "T002",
+          "T007",
+          "T012"
+        ],
+        "style_source_ids": {
+          "T002": "T002",
+          "T007": "T007",
+          "T012": "T012"
         },
-        "条件格式": {
-          "value": "1个",
-          "pass": true
+        "data_validation_ranges": [
+          "G5:G7"
+        ],
+        "conditional_format_ranges": [
+          "G5:G7"
+        ]
+      },
+      {
+        "file": "W1_拆分_工程技术部.xlsx",
+        "sheet": "工程技术部",
+        "header_range": "A1:G4",
+        "data_range": "A5:G6",
+        "task_ids": [
+          "T003",
+          "T008"
+        ],
+        "style_source_ids": {
+          "T003": "T003",
+          "T008": "T008"
         },
-        "列宽": {
-          "value": "A=10.0",
-          "pass": true
+        "data_validation_ranges": [
+          "G5:G6"
+        ],
+        "conditional_format_ranges": [
+          "G5:G6"
+        ]
+      },
+      {
+        "file": "W1_拆分_安全管理部.xlsx",
+        "sheet": "安全管理部",
+        "header_range": "A1:G4",
+        "data_range": "A5:G6",
+        "task_ids": [
+          "T004",
+          "T009"
+        ],
+        "style_source_ids": {
+          "T004": "T004",
+          "T009": "T009"
         },
-        "公式": {
-          "value": "=E2*100",
-          "pass": true
-        }
+        "data_validation_ranges": [
+          "G5:G6"
+        ],
+        "conditional_format_ranges": [
+          "G5:G6"
+        ]
+      },
+      {
+        "file": "W1_拆分_市场营销部.xlsx",
+        "sheet": "市场营销部",
+        "header_range": "A1:G4",
+        "data_range": "A5:G6",
+        "task_ids": [
+          "T005",
+          "T010"
+        ],
+        "style_source_ids": {
+          "T005": "T005",
+          "T010": "T010"
+        },
+        "data_validation_ranges": [
+          "G5:G6"
+        ],
+        "conditional_format_ranges": [
+          "G5:G6"
+        ]
+      },
+      {
+        "file": "W1_反馈_财务部.xlsx",
+        "sheet": "财务部",
+        "header_range": "A1:G4",
+        "data_range": "A5:G7",
+        "task_ids": [
+          "T002",
+          "T007",
+          "T012"
+        ],
+        "style_source_ids": {
+          "T002": "T002",
+          "T007": "T007",
+          "T012": "T012"
+        },
+        "data_validation_ranges": [
+          "G5:G7"
+        ],
+        "conditional_format_ranges": [
+          "G5:G7"
+        ]
+      },
+      {
+        "file": "W1_反馈_工程技术部.xlsx",
+        "sheet": "工程技术部",
+        "header_range": "A1:G4",
+        "data_range": "A5:G7",
+        "task_ids": [
+          "T003",
+          "T008",
+          "T999"
+        ],
+        "style_source_ids": {
+          "T003": "T003",
+          "T008": "T008",
+          "T999": "T001"
+        },
+        "data_validation_ranges": [
+          "G5:G7"
+        ],
+        "conditional_format_ranges": [
+          "G5:G7"
+        ]
+      },
+      {
+        "file": "W1_反馈_市场营销部.xlsx",
+        "sheet": "市场营销部",
+        "header_range": "A1:G4",
+        "data_range": "A5:G6",
+        "task_ids": [
+          "T005",
+          "T010"
+        ],
+        "style_source_ids": {
+          "T005": "T005",
+          "T010": "T010"
+        },
+        "data_validation_ranges": [
+          "G5:G6"
+        ],
+        "conditional_format_ranges": [
+          "G5:G6"
+        ]
+      },
+      {
+        "file": "W1_预期_6月汇总.xlsx",
+        "sheet": "6月汇总",
+        "header_range": "A1:G4",
+        "data_range": "A5:G6",
+        "task_ids": [
+          "T006",
+          "T999"
+        ],
+        "style_source_ids": {
+          "T006": "T006",
+          "T999": "T001"
+        },
+        "data_validation_ranges": [
+          "G5:G6"
+        ],
+        "conditional_format_ranges": [
+          "G5:G6"
+        ]
+      },
+      {
+        "file": "W1_预期_全年更新.xlsx",
+        "sheet": "年度计划(更新)",
+        "header_range": "A1:G4",
+        "data_range": "A5:G17",
+        "task_ids": [
+          "T001",
+          "T002",
+          "T003",
+          "T004",
+          "T005",
+          "T006",
+          "T007",
+          "T008",
+          "T009",
+          "T010",
+          "T011",
+          "T012",
+          "T999"
+        ],
+        "style_source_ids": {
+          "T001": "T001",
+          "T002": "T002",
+          "T003": "T003",
+          "T004": "T004",
+          "T005": "T005",
+          "T006": "T006",
+          "T007": "T007",
+          "T008": "T008",
+          "T009": "T009",
+          "T010": "T010",
+          "T011": "T011",
+          "T012": "T012",
+          "T999": "T001"
+        },
+        "data_validation_ranges": [
+          "G5:G17"
+        ],
+        "conditional_format_ranges": [
+          "G5:G17"
+        ]
       }
-    },
-    "W1_拆分_市场营销部": {
-      "all_pass": true,
-      "details": {
-        "冻结": {
-          "value": "A2",
-          "pass": true
-        },
-        "下拉": {
-          "value": "2个",
-          "pass": true
-        },
-        "条件格式": {
-          "value": "1个",
-          "pass": true
-        },
-        "列宽": {
-          "value": "A=10.0",
-          "pass": true
-        },
-        "公式": {
-          "value": "=E2*100",
-          "pass": true
-        }
-      }
-    },
-    "W1_拆分_综合办公室": {
-      "all_pass": true,
-      "details": {
-        "冻结": {
-          "value": "A2",
-          "pass": true
-        },
-        "下拉": {
-          "value": "2个",
-          "pass": true
-        },
-        "条件格式": {
-          "value": "1个",
-          "pass": true
-        },
-        "列宽": {
-          "value": "A=10.0",
-          "pass": true
-        },
-        "公式": {
-          "value": "=E2*100",
-          "pass": true
-        }
-      }
-    },
-    "W1_拆分_财务部": {
-      "all_pass": true,
-      "details": {
-        "冻结": {
-          "value": "A2",
-          "pass": true
-        },
-        "下拉": {
-          "value": "2个",
-          "pass": true
-        },
-        "条件格式": {
-          "value": "1个",
-          "pass": true
-        },
-        "列宽": {
-          "value": "A=10.0",
-          "pass": true
-        },
-        "公式": {
-          "value": "=E2*100",
-          "pass": true
-        }
-      }
-    }
+    ]
   }
 }
