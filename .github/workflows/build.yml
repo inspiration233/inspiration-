@@ -12,8 +12,11 @@ jobs:
       matrix:
         include:
           - { os: macos-14, arch: arm64, tag: AppleSilicon }
-          - { os: macos-13, arch: x64, tag: Intel }
+          # Intel 版为尽力而为: GitHub 正在淘汰 Intel mac 机器, 排队可能极长
+          - { os: macos-13, arch: x64, tag: Intel, optional: true }
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    continue-on-error: ${{ matrix.optional || false }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -51,6 +54,7 @@ jobs:
   windows:
     name: windows x64（引擎测试 + 安装包）
     runs-on: windows-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
