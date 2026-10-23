@@ -301,20 +301,35 @@ def test_group_mode_matches_per_group_ordinal(tmp_path):
     wb.close()
 
 
-def test_group_deletion_detection_warns(tmp_path):
-    # 反馈某组缺一条而其余已交回: 疑似被删除, 明确提示(不自动删)
+def test_group_deletion_identified_by_serial_key(tmp_path):
+    # 按主键对位: 交回序号 1,2,4 → 缺口=3, 精确点名"缺少序号3", 且序号4对位不滑
     base = [(1, "甲", 10, 0, "进行中"), (2, "甲", 20, 0, "进行中"),
             (3, "甲", 30, 0, "进行中"), (4, "甲", 40, 0, "进行中")]
     feedback = [(1, "甲", 11, 0, "进行中"), (2, "甲", 21, 0, "进行中"),
-                (4, "甲", 41, 0, "进行中")]                      # 第 3 条被删除
+                (4, "甲", 44, 0, "进行中")]                      # 序号 3 被删除, 未重排
     p = payload(tmp_path, base, feedback)
     p["key_fields"] = [1]; p["update_fields"] = [3]; p["group_field"] = 2
     preview = reconcile_preview(p)
     assert preview["can_export"], preview["issues"]
-    # 组内数量对不上即警示; 中间删行会滑位, 不能断言具体缺哪条
-    assert any("交回 3 条" in w and "底稿有 4 条" in w and "被删除" in w for w in preview["warnings"])
-    assert any("整体错位" in w for w in preview["warnings"])
+    assert any("缺少序号 3" in w and "组内第 3 条" in w for w in preview["warnings"])
+    assert not any("整体错位" in w for w in preview["warnings"])
+    # 序号 4 的值落在底稿第 4 条上(不滑位)
+    change = next(c for c in preview["changes"] if c["after"] == 44)
+    assert change["key"] == ["甲", 4]
     assert any("被删除" in m["message"] for m in preview["missing"])
+
+
+def test_group_deletion_conservative_when_serials_unusable(tmp_path):
+    # 序号体系被打乱(越界值): 退回按位对位+数量差警示+错位提醒
+    base = [(1, "甲", 10, 0, "进行中"), (2, "甲", 20, 0, "进行中"),
+            (3, "甲", 30, 0, "进行中"), (4, "甲", 40, 0, "进行中")]
+    feedback = [(2, "甲", 21, 0, "进行中"), (3, "甲", 31, 0, "进行中"),
+                (9, "甲", 99, 0, "进行中")]                      # 序号 9 越界
+    p = payload(tmp_path, base, feedback)
+    p["key_fields"] = [1]; p["update_fields"] = [3]; p["group_field"] = 2
+    preview = reconcile_preview(p)
+    assert any("交回 3 条" in w and "底稿有 4 条" in w for w in preview["warnings"])
+    assert any("整体错位" in w for w in preview["warnings"])
 
 
 def test_group_full_coverage_no_deletion_warning(tmp_path):

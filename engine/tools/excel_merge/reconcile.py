@@ -562,6 +562,52 @@ def _key_column_merged(source, key_field):
     return False
 
 
+def _serial_ordinal(value):
+    """拆分产物的组内序号是 1..N 的数字; 文本例N等返回 None。"""
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    text = str(value).strip()
+    return int(text) if text.isdigit() else None
+
+
+def _align_group_serials(found, base_group_ords, key_field, mapping):
+    """按主键对位: 反馈某组的序号值若互不相同且都落在底稿组内序号范围内
+    (单位删行而未重排), 用"序号值=组内第k条"重对位——精确定位被删记录,
+    并避免其后的记录整体滑位。序号不可解读的组保持原按位对位。
+    返回 (调整后的found, 已按主键对位的组集合)。"""
+    groups = defaultdict(list)
+    passthrough = []
+    for ident, entry in found.items():
+        if isinstance(ident, tuple) and ident[0] == "grp":
+            groups[ident[1]].append((ident, entry))
+        else:
+            passthrough.append((ident, entry))
+    adjusted, aligned = {}, set()
+    for gkey, members in groups.items():
+        base_ks = base_group_ords.get(gkey) or set()
+        targets = {}
+        usable = bool(base_ks)
+        for ident, entry in members:
+            k = _serial_ordinal(entry[1].get(mapping.get(key_field, key_field)))
+            if k is None or k not in base_ks or k in targets:
+                usable = False
+                break
+            targets[k] = entry
+        if usable:
+            aligned.add(gkey)
+            for k, entry in targets.items():
+                position, values, display = entry
+                adjusted[("grp", gkey, k)] = (position, values, [display[0], k])
+        else:
+            for ident, entry in members:
+                adjusted[ident] = entry
+    for ident, entry in passthrough:
+        adjusted[ident] = entry
+    return adjusted, aligned
+
+
 def _analyse(payload, cancel=None, progress=None):
     plan = Plan(payload)
     try:
@@ -646,6 +692,7 @@ def _analyse(payload, cancel=None, progress=None):
             full_map = None
             if group_mode:
                 found = _group_records(plan, feedback, keys[0], group_field, mapping, "feedback")
+                found, serial_aligned = _align_group_serials(found, base_group_ords, keys[0], mapping)
                 base_groups = {k[1] for k in records if isinstance(k, tuple) and k[0] == "grp"}
                 labels = {}
                 for identity, (_, _, display) in found.items():
@@ -669,12 +716,20 @@ def _analyse(payload, cancel=None, progress=None):
                     label = found[("grp", gkey, min(fb_ks))][2][0]
                     for k in missing_ks:
                         suspected_deleted.add(("grp", gkey, k))
-                    # 组内按"第 k 条"对位: 中间删行会让后续记录整体滑位,
-                    # 无法断定缺的是哪一条, 因此报数量差并提示核对整组
-                    plan.warnings.append(
-                        f"{feedback.label} 的组「{label}」交回 {len(fb_ks)} 条，底稿有 {len(base_ks)} 条，"
-                        f"少 {len(missing_ks)} 条——可能有记录被删除；该组按第 k 条对位，"
-                        "对应关系可能整体错位，请逐条核对该组的改动。")
+                    if gkey in serial_aligned:
+                        # 按主键对位成功: 序号缺口精确点名被删的记录, 其余对位不受影响
+                        for k in sorted(missing_ks):
+                            base_serial = records[("grp", gkey, k)][1].get(keys[0])
+                            plan.warnings.append(
+                                f"{feedback.label} 的组「{label}」缺少序号 {base_serial}"
+                                f"（底稿组内第 {k} 条），可能已被删除；其余记录已按序号对位。")
+                    else:
+                        # 组内按"第 k 条"对位: 中间删行会让后续记录整体滑位,
+                        # 无法断定缺的是哪一条, 因此报数量差并提示核对整组
+                        plan.warnings.append(
+                            f"{feedback.label} 的组「{label}」交回 {len(fb_ks)} 条，底稿有 {len(base_ks)} 条，"
+                            f"少 {len(missing_ks)} 条——可能有记录被删除；该组按第 k 条对位，"
+                            "对应关系可能整体错位，请逐条核对该组的改动。")
             if len(mapping) != len(required):
                 continue
             for key, (position, values, key_values) in found.items():
