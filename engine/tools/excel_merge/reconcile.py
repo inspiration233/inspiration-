@@ -627,6 +627,13 @@ def _analyse(payload, cancel=None, progress=None):
             return plan
         proposals = defaultdict(list)
         seen_imports = set()
+        # 删除检查(分组模式): 反馈某组只交回部分记录 → 缺失条疑似被删除
+        base_group_ords = defaultdict(set)
+        if group_mode:
+            for ident in records:
+                if isinstance(ident, tuple) and ident[0] == "grp":
+                    base_group_ords[ident[1]].add(ident[2])
+        suspected_deleted = set()
         for index, item in enumerate(items):
             _cancelled(cancel)
             feedback = Source(item, payload.get("selection"), plan.books, plan.warnings)
@@ -649,6 +656,25 @@ def _analyse(payload, cancel=None, progress=None):
                         f"{feedback.label} 含底表中没有的分组：{label}，该组记录将作为新记录处理。")
             else:
                 found = _indexed(plan, feedback, keys, mapping, "feedback", known_keys=set(records))
+            if group_mode:
+                fb_groups = defaultdict(set)
+                for ident in found:
+                    if isinstance(ident, tuple) and ident[0] == "grp":
+                        fb_groups[ident[1]].add(ident[2])
+                for gkey, fb_ks in fb_groups.items():
+                    base_ks = base_group_ords.get(gkey, set())
+                    missing_ks = base_ks - fb_ks
+                    if not missing_ks:
+                        continue
+                    label = found[("grp", gkey, min(fb_ks))][2][0]
+                    for k in missing_ks:
+                        suspected_deleted.add(("grp", gkey, k))
+                    # 组内按"第 k 条"对位: 中间删行会让后续记录整体滑位,
+                    # 无法断定缺的是哪一条, 因此报数量差并提示核对整组
+                    plan.warnings.append(
+                        f"{feedback.label} 的组「{label}」交回 {len(fb_ks)} 条，底稿有 {len(base_ks)} 条，"
+                        f"少 {len(missing_ks)} 条——可能有记录被删除；该组按第 k 条对位，"
+                        "对应关系可能整体错位，请逐条核对该组的改动。")
             if len(mapping) != len(required):
                 continue
             for key, (position, values, key_values) in found.items():
@@ -666,7 +692,9 @@ def _analyse(payload, cancel=None, progress=None):
             if progress:
                 progress(index + 1, len(items), feedback.label, plan.feedback_count)
         plan.missing = [{"key": values, "position": position, "status": "not_received",
-                         "action": "keep_current", "message": "本次未反馈，保留当前内容"}
+                         "action": "keep_current",
+                         "message": ("该组其余记录已交回而此条缺失，可能已被删除；已保留当前内容"
+                                     if key in suspected_deleted else "本次未反馈，保留当前内容")}
                         for key, (position, _, values) in records.items() if key not in proposals]
         final = {key: (pos, dict(values), key_values, current.descriptor())
                  for key, (pos, values, key_values) in records.items()}

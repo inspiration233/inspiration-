@@ -301,6 +301,31 @@ def test_group_mode_matches_per_group_ordinal(tmp_path):
     wb.close()
 
 
+def test_group_deletion_detection_warns(tmp_path):
+    # 反馈某组缺一条而其余已交回: 疑似被删除, 明确提示(不自动删)
+    base = [(1, "甲", 10, 0, "进行中"), (2, "甲", 20, 0, "进行中"),
+            (3, "甲", 30, 0, "进行中"), (4, "甲", 40, 0, "进行中")]
+    feedback = [(1, "甲", 11, 0, "进行中"), (2, "甲", 21, 0, "进行中"),
+                (4, "甲", 41, 0, "进行中")]                      # 第 3 条被删除
+    p = payload(tmp_path, base, feedback)
+    p["key_fields"] = [1]; p["update_fields"] = [3]; p["group_field"] = 2
+    preview = reconcile_preview(p)
+    assert preview["can_export"], preview["issues"]
+    # 组内数量对不上即警示; 中间删行会滑位, 不能断言具体缺哪条
+    assert any("交回 3 条" in w and "底稿有 4 条" in w and "被删除" in w for w in preview["warnings"])
+    assert any("整体错位" in w for w in preview["warnings"])
+    assert any("被删除" in m["message"] for m in preview["missing"])
+
+
+def test_group_full_coverage_no_deletion_warning(tmp_path):
+    base = [(1, "甲", 10, 0, "进行中"), (2, "甲", 20, 0, "进行中")]
+    feedback = [(1, "甲", 11, 0, "进行中"), (2, "甲", 21, 0, "进行中")]
+    p = payload(tmp_path, base, feedback)
+    p["key_fields"] = [1]; p["update_fields"] = [3]; p["group_field"] = 2
+    preview = reconcile_preview(p)
+    assert not any("删除" in w for w in preview["warnings"])
+
+
 def test_group_mode_reports_unknown_group_as_new_records(tmp_path):
     base = [(1, "甲", 10, 0), (2, "甲", 20, 0)]
     feedback = [(1, "甲", 11, 0), (1, "丙", 99, 0)]
