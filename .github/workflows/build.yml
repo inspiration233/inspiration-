@@ -19,7 +19,7 @@ jobs:
       - uses: actions/setup-python@v5
         with: { python-version: '3.11' }
       - name: 安装引擎依赖
-        run: pip install -r requirements.txt pyinstaller
+        run: pip install -r requirements.txt pyinstaller pillow
       - name: 引擎全量测试（顺带完成 mac 冒烟）
         run: python -m pytest tests -q
       - name: 打包引擎二进制
@@ -52,7 +52,7 @@ jobs:
       - uses: actions/setup-python@v5
         with: { python-version: '3.11' }
       - name: 安装引擎依赖
-        run: pip install -r requirements.txt pyinstaller
+        run: pip install -r requirements.txt pyinstaller pillow
       - name: 引擎全量测试
         run: python -m pytest tests -q
       - name: 打包引擎二进制

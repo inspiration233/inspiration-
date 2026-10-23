@@ -241,8 +241,11 @@ def test_cross_record_formula_falls_back_to_cached_value(tmp_path):
         for name in zin.namelist():
             data = zin.read(name)
             if name == "xl/worksheets/sheet1.xml":
-                data = (data.replace(b"<f>B3</f><v></v>", b"<f>B3</f><v>30</v>")
-                            .replace(b"<f>B2</f><v></v>", b"<f>B2</f><v>20</v>"))
+                import re as _re
+                data = (_re.sub(rb"<f>B3</f>(<v\s*/>|<v></v>)?", b"<f>B3</f><v>30</v>", data)
+                        if b"<f>B3</f>" in data else data)
+                data = (_re.sub(rb"<f>B2</f>(<v\s*/>|<v></v>)?", b"<f>B2</f><v>20</v>", data)
+                        if b"<f>B2</f>" in data else data)
             zout.writestr(name, data)
     payload = {"path": str(patched), "sheet": "Sheet",
                "selection": {"axis": "rows", "header_start": 1, "header_end": 1,
@@ -320,9 +323,10 @@ def test_serial_renumbered_from_one_per_group(tmp_path):
         for name in zin.namelist():
             data = zin.read(name)
             if name == "xl/worksheets/sheet1.xml":
+                import re as _re
                 for i in range(2, 6):
-                    data = data.replace(f"<f>ROW()-1</f><v></v>".encode(),
-                                        f"<f>ROW()-1</f><v>{i - 1}</v>".encode(), 1)                         if f"v>{i - 1}<" not in data.decode() else data
+                    data = _re.sub((r"<f>ROW\(\)-1</f>(<v\s*/>|<v></v>)?").encode(),
+                                   f"<f>ROW()-1</f><v>{i - 1}</v>".encode(), data, count=1)
             zout.writestr(name, data)
     # 逐格精确注入(上面一次性替换不精确, 重新做)
     with ZF(src0) as zin, ZF(src, "w") as zout:
