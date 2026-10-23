@@ -204,7 +204,7 @@
       table.append(cg);
       const fields = new Set((report.fields || []).map(f => f.index)), selected = new Set(isPrimary(activeSource()) ? roleFields() : []), sel = report.selection;
       const thead = make('thead'), heading = make('tr'); heading.append(make('th', 'corner', ''));
-      for (let c = sc; c <= ec; c++) { const th = make('th', sel.axis === 'rows' && fields.has(c) ? 'field-head' : '', colName(c)); th.dataset.col = c; if (sel.axis === 'rows' && selected.has(c)) th.classList.add('selected'); th.onclick = () => selectField(c, 'rows'); heading.append(th); }
+      for (let c = sc; c <= ec; c++) { const th = make('th', sel.axis === 'rows' && fields.has(c) ? 'field-head' : '', colName(c)); th.dataset.col = c; if (sel.axis === 'rows' && selected.has(c)) th.classList.add('selected'); th.onclick = ev => selectField(c, 'rows', ev); th.onpointerdown = ev => beginSweep(ev, c, 'rows', th); th.onpointerenter = () => extendSweep(c, th); heading.append(th); }
       thead.append(heading); table.append(thead);
       const lookup = new Map((report.cells || []).map(cell => [`${cell.row}:${cell.col}`, cell]));
       const covered = new Set(), merged = new Map();
@@ -217,7 +217,7 @@
       const tbody = make('tbody');
       for (let r = sr; r <= er; r++) {
         const tr = make('tr'); tr.style.height = `${Math.max(16, report.row_heights?.[r] || 20)}px`;
-        const th = make('th', sel.axis === 'columns' && fields.has(r) ? 'field-head' : '', r); th.dataset.row = r; if (sel.axis === 'columns' && selected.has(r)) th.classList.add('selected'); th.onclick = () => selectField(r, 'columns'); tr.append(th);
+        const th = make('th', sel.axis === 'columns' && fields.has(r) ? 'field-head' : '', r); th.dataset.row = r; if (sel.axis === 'columns' && selected.has(r)) th.classList.add('selected'); th.onclick = ev => selectField(r, 'columns', ev); th.onpointerdown = ev => beginSweep(ev, r, 'columns', th); th.onpointerenter = () => extendSweep(r, th); tr.append(th);
         for (let c = sc; c <= ec; c++) {
           const key = `${r}:${c}`; if (covered.has(key)) continue;
           const merge = merged.get(key), cell = (merge ? lookup.get(`${merge.min_row}:${merge.min_col}`) : null) || lookup.get(key);
@@ -289,15 +289,87 @@
       const bar = $('field-toolbar'); bar.replaceChildren();
       if (state.mode === 'merge') { bar.append(make('span', '', '蓝色=标题行，浅蓝=数据行；识别有误时可修改上方范围。')); return; }
       if (!isPrimary(activeSource())) { bar.append(make('span', '', '当前查看反馈或旧版本；选择列请先点选底稿文件。')); return; }
-      bar.append(make('span', '', '选用途，再点列标题：'));
+      bar.append(make('span', '', '选用途，再点列标题（可拖过连选、Shift 选一段）：'));
       const choices = state.mode === 'split' ? [['group','拆分依据'],['outputFields','输出字段']] : [['groupField','单位列（分组）'],['keys','认记录（主键）'],['updates','允许修改的列'],['compares','改后标红的列'],...(current().filteredEnabled?[['filteredFields','筛选结果字段']]:[])];
       for (const [value,label] of choices) { const button = make('button', current().role === value ? 'active' : '', label); button.onclick = () => { current().role = value; renderToolbar(); renderGrid(config(activeSource()).report); }; bar.append(button); }
+      // 批量操作: 全选(排除互斥列)/清空, 列多时不用逐列点
+      {
+        const s = current(), scalar = state.mode === 'reconcile' && s.role === 'groupField';
+        const batch = make('span', 'field-batch');
+        batch.style.marginLeft = 'auto';
+        if (!scalar) {
+          const all = make('button', 'ghost compact', '全选');
+          all.onclick = () => {
+            const cfg = config(activeSource()); if (!cfg) return;
+            const skip = new Set(state.mode === 'reconcile' && s.role === 'updates' ? [...s.keys, ...(s.groupField != null ? [s.groupField] : [])] : []);
+            let n = 0; for (const f of cfg.report.fields) if (!skip.has(f.index) && addFieldIndexes(s, f.index, f.index)) n++;
+            if (n) { commitFieldPick(cfg); notice(`已批量加入 ${n} 列。`); }
+          };
+          batch.append(all);
+        }
+        const clear = make('button', 'ghost compact', '清空');
+        clear.onclick = () => {
+          if (state.mode === 'split' && s.role !== 'outputFields') s.group = s.group.filter(g => g.kind !== 'field');
+          else if (scalar) s.groupField = null;
+          else s[s.role] = [];
+          const cfg = config(activeSource());
+          invalidate(); renderRoles(); renderToolbar(); if (cfg) renderGrid(cfg.report);
+        };
+        batch.append(clear);
+        bar.append(batch);
+      }
       // 选中反馈就在网格正上方——chips 区可能在屏幕外, 这里给即时可见的确认
       const picked = roleFields();
       if (picked.length) bar.append(make('span', 'hint', `已选 ${picked.length} 项：${picked.slice(0, 4).map(fieldChipLabel).join('、')}${picked.length > 4 ? ' 等' : ''}`));
     }
-    function selectField(index, axis) {
+    // 批量选列: 向当前用途批量加入字段(不切换已有项), 返回实际新增数
+    function addFieldIndexes(s, from, to) {
+      const cfg = config(activeSource()); if (!cfg) return 0;
+      const known = new Set(cfg.report.fields.map(f => f.index));
+      const lo = Math.min(from, to), hi = Math.max(from, to);
+      let added = 0;
+      for (let i = lo; i <= hi; i++) {
+        if (!known.has(i)) continue;
+        if (state.mode === 'split' && s.role !== 'outputFields') {
+          if (!s.group.some(g => g.kind === 'field' && g.index === i)) { s.group.push({ kind: 'field', index: i }); added++; }
+        } else if (state.mode === 'reconcile' && s.role === 'groupField') {
+          continue;
+        } else {
+          if (!s[s.role].includes(i)) { s[s.role].push(i); added++; }
+        }
+      }
+      return added;
+    }
+    function commitFieldPick(cfg) {
+      invalidate(); renderRoles(); renderToolbar(); renderGrid(cfg.report);
+    }
+    function selectionGuards(index, axis) {
+      const source = activeSource(), cfg = config(source);
+      if (!cfg || state.mode === 'merge') return null;
+      if (cfg.selection.axis !== axis) return null;
+      if (!isPrimary(source)) return null;
+      if (!cfg.report.fields.some(f => f.index === index)) return null;
+      return cfg;
+    }
+    function beginSweep(ev, index, axis, th) {
+      if (ev.button !== 0 || !selectionGuards(index, axis)) return;
+      ev.preventDefault();
+      state.sweep = { axis, anchor: index, set: new Set([index]) };
+      th.classList.add('selected');
+    }
+    function extendSweep(index, th) {
+      if (!state.sweep) return;
+      if (!state.sweep.set.has(index)) { state.sweep.set.add(index); th.classList.add('selected'); }
+    }
+    function selectField(index, axis, ev) {
       const source = activeSource(), cfg = config(source); if (!cfg || state.mode === 'merge') return;
+      if (state.sweepCommit) { state.sweepCommit = false; return; }
+      if (ev && ev.shiftKey && state.lastFieldPick && state.lastFieldPick.mode === state.mode
+          && state.lastFieldPick.axis === axis && selectionGuards(index, axis)) {
+        const n = addFieldIndexes(current(), state.lastFieldPick.index, index);
+        if (n) { commitFieldPick(cfg); notice(`已批量加入 ${n} 列。`); }
+        return;
+      }
       if (cfg.selection.axis !== axis) {
         // 点错方向不给"静默无效": 明确告知字段在哪一侧
         notice(cfg.selection.axis === 'columns'
@@ -311,6 +383,7 @@
       if (state.mode === 'reconcile' && s.role === 'groupField') { s.groupField = s.groupField === index ? null : index; }
       else if (state.mode === 'split'&&s.role!=='outputFields') { const pos = s.group.findIndex(g => g.kind === 'field' && g.index === index); if (pos >= 0) s.group.splice(pos,1); else s.group.push({kind:'field',index}); }
       else { const list = s[s.role], pos = list.indexOf(index); if (pos >= 0) list.splice(pos,1); else list.push(index); }
+      state.lastFieldPick = { index, axis, mode: state.mode, role: s.role };
       invalidate(); renderRoles(); renderToolbar(); renderGrid(cfg.report);
     }
     function pickHint() {
@@ -709,6 +782,16 @@
     $('opt-template').onchange=()=>{current().options.templateIndex=Number($('opt-template').value);current().options.templateSheet=null;renderFiles();clearMappings();invalidate();renderMapping();};
     $('opt-template-sheet').onchange=()=>{current().options.templateSheet=$('opt-template-sheet').value;clearMappings();invalidate();renderMapping();};
     $('mapping-reviewed').onclick=()=>{const cfg=config(activeSource());if(!cfg)return;cfg.mapping_review=false;invalidate('已采用当前字段对应，请重新预览核对。');renderMapping();};
+    const finishSweep = () => {
+      const sweep = state.sweep; if (!sweep) return;
+      state.sweep = null;
+      if (sweep.set.size < 2) return;
+      const cfg = config(activeSource()); if (!cfg) return;
+      let n = 0; for (const i of sweep.set) if (addFieldIndexes(current(), i, i)) n++;
+      if (n) { state.sweepCommit = true; commitFieldPick(cfg); notice(`已连选 ${sweep.set.size} 列。`); }
+    };
+    window.addEventListener('pointerup', finishSweep);
+    window.addEventListener('pointercancel', finishSweep);
     document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!$('done-pane').classList.contains('hidden')&&!state.busy&&!state.merging)closePane('done-pane');});
     $('zoom-out').onclick=()=>{gridZoom.mode='manual';gridZoom.scale=Math.max(GRID_MIN_ZOOM,(gridZoom.scale||1)-0.1);applyGridZoom();};
     $('zoom-in').onclick=()=>{gridZoom.mode='manual';gridZoom.scale=Math.min(2,(gridZoom.scale||1)+0.1);applyGridZoom();};

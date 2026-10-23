@@ -169,3 +169,4 @@ body.modal-open #stage{overflow:hidden}
 /* 带输入框的选项行: 不被压缩裁剪 */
 .excel-tool .nowrap-label{flex-wrap:wrap;min-width:0}
 .excel-tool .nowrap-label input{flex-shrink:0}
+.excel-tool .field-batch{display:inline-flex;gap:6px;margin-left:auto}
