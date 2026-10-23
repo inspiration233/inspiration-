@@ -61,6 +61,7 @@
     },
     "dmg": {
       "artifactName": "工具箱-${version}-${arch}.${ext}"
-    }
+    },
+    "afterPack": "./afterpack.js"
   }
 }
