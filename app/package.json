@@ -25,7 +25,8 @@
       "shell/**",
       "shared/**",
       "tools/**",
-      "package.json"
+      "package.json",
+      "workbench-smoke.js"
     ],
     "extraResources": [
       {

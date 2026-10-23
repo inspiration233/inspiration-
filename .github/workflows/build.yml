@@ -29,6 +29,11 @@ jobs:
             --hidden-import xlrd --hidden-import openpyxl \
             engine/sidecar_entry.py
           ls -la dist-engine/current
+      - name: 自检引擎二进制(协议应答)
+        run: |
+          out=$(printf '{"op":"merge","payload":{}}
+' | ./dist-engine/current/engine-sidecar | head -1)
+          [[ "$out" == *'"evt"'* ]] || { echo "引擎二进制无协议应答: $out"; exit 1; }
       - name: 安装前端依赖
         working-directory: app
         run: npm install --no-audit --no-fund
@@ -62,6 +67,10 @@ jobs:
             --hidden-import xlrd --hidden-import openpyxl `
             engine/sidecar_entry.py
           Get-ChildItem dist-engine/current
+      - name: 自检引擎二进制(协议应答)
+        run: |
+          $out = '{"op":"merge","payload":{}}' | ./dist-engine/current/engine-sidecar.exe | Select-Object -First 1
+          if (-not $out -or $out -notmatch '"evt"') { throw "引擎二进制无协议应答: $out" }
       - name: 安装前端依赖
         working-directory: app
         run: npm install --no-audit --no-fund
