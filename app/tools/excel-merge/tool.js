@@ -236,34 +236,60 @@
         }
         tbody.append(tr);
       }
-      table.append(tbody); const sizer = make('div','grid-scale'); sizer.append(table); wrap.replaceChildren(sizer); wrap.scrollLeft = oldLeft; wrap.scrollTop = oldTop; applyGridZoom();
+      table.append(tbody); wrap.replaceChildren(table); wrap.scrollLeft = oldLeft; wrap.scrollTop = oldTop; applyGridZoom();
       $('grid-status').textContent = `${report.max_row} 行 × ${report.max_column} 列 · 当前 ${cellRef(sr,sc)}:${cellRef(er,ec)}${report.truncated ? '（分段预览）' : ''}`;
       $('page-prev').disabled = sr <= 1; $('page-next').disabled = er >= report.max_row; $('page-left').disabled = sc <= 1; $('page-right').disabled = ec >= report.max_column;
     }
-    // 预览缩放: 默认"适应列宽"(不低于35%), 可手动增减; 大表第一次就能看全
+    // 预览缩放: 默认"适应列宽"(不低于35%), 可手动增减。
+    // 用 CSS zoom(布局级缩放)而不是 transform: 滚动条/冻结表头/跳转/点击
+    // 坐标全部按缩放后的真实布局工作, 不需要任何坐标换算补丁。
     const GRID_MIN_ZOOM = 0.35;
     const gridZoom = { mode: 'fit', scale: 1 };
+    function fitZoom(table, wrap) {
+      table.style.zoom = '';
+      const natural = table.scrollWidth;
+      let z = Math.min(1, Math.max(GRID_MIN_ZOOM, (wrap.clientWidth - 2) / Math.max(1, natural)));
+      table.style.zoom = z;
+      // 应用后容器可能因滚动条出现/消失而变宽窄, 再校正一次
+      const corrected = Math.min(1, Math.max(GRID_MIN_ZOOM, (wrap.clientWidth - 2) / Math.max(1, natural)));
+      if (Math.abs(corrected - z) > 0.005) { z = corrected; table.style.zoom = z; }
+      return z;
+    }
     function applyGridZoom() {
-      const wrap = $('grid-wrap'), sizer = wrap.firstElementChild;
-      const table = sizer && sizer.querySelector && sizer.querySelector('table');
+      const wrap = $('grid-wrap'), table = wrap.querySelector('table');
       if (!table) return;
-      if (gridZoom.mode === 'fit')
-        gridZoom.scale = Math.min(1, Math.max(GRID_MIN_ZOOM, (wrap.clientWidth - 2) / Math.max(1, table.scrollWidth)));
-      const z = gridZoom.scale, scaled = z < 0.995;
-      table.style.transform = scaled ? `scale(${z})` : '';
-      sizer.style.width = scaled ? Math.ceil(table.scrollWidth * z) + 'px' : '';
-      sizer.style.height = scaled ? Math.ceil(table.scrollHeight * z) + 'px' : '';
-      $('zoom-level').textContent = (gridZoom.mode === 'fit' ? '适应 ' : '') + Math.round(z * 100) + '%';
+      gridZoom.scale = gridZoom.mode === 'fit' ? fitZoom(table, wrap) : gridZoom.scale;
+      table.style.zoom = gridZoom.scale;
+      $('zoom-level').textContent = (gridZoom.mode === 'fit' ? '适应 ' : '') + Math.round(gridZoom.scale * 100) + '%';
     }
     function syncModals() {
-      const open = !$('done-pane').classList.contains('hidden') || !$('progress-pane').classList.contains('hidden');
+      const open = ['done-pane','progress-pane'].some(id => !$(id).classList.contains('hidden') || $(id).classList.contains('closing'));
       document.body.classList.toggle('modal-open', open);
+    }
+    // 弹窗动效: 开=背景淡入+卡片弹性上浮, 关=反向退场后再隐藏(有开有关)
+    function openPane(id) {
+      const el = $(id);
+      el.classList.remove('closing'); el.classList.remove('hidden');
+      void el.offsetWidth;                     // 重新触发进入动画
+      syncModals();
+    }
+    function closePane(id) {
+      const el = $(id);
+      if (el.classList.contains('hidden') || el.classList.contains('closing')) return;
+      el.classList.add('closing');
+      let fired = false;
+      const finish = () => {
+        if (fired) return; fired = true;
+        el.classList.remove('closing'); el.classList.add('hidden'); syncModals();
+      };
+      el.addEventListener('animationend', e => { if (e.target === el) finish(); }, { once: true });
+      setTimeout(finish, 300);                 // 兜底: 动画事件缺席也能收尾
     }
     function renderToolbar() {
       const bar = $('field-toolbar'); bar.replaceChildren();
-      if (state.mode === 'merge') { bar.append(make('span', '', '蓝色区域为表头，浅蓝区域为数据；如识别不合适，直接修改上方范围。')); return; }
-      if (!isPrimary(activeSource())) { bar.append(make('span', '', '正在查看反馈或原始版本。可修改范围，并在下方核对字段对应；点底表文件返回字段选择。')); return; }
-      bar.append(make('span', '', '点击列头 / 行头，选择：'));
+      if (state.mode === 'merge') { bar.append(make('span', '', '蓝色=标题行，浅蓝=数据行；识别有误时可修改上方范围。')); return; }
+      if (!isPrimary(activeSource())) { bar.append(make('span', '', '当前查看反馈或旧版本；选择列请先点选底稿文件。')); return; }
+      bar.append(make('span', '', '选用途，再点列标题：'));
       const choices = state.mode === 'split' ? [['group','拆分依据'],['outputFields','输出字段']] : [['groupField','单位列（分组）'],['keys','认记录（主键）'],['updates','允许修改的列'],['compares','改后标红的列'],...(current().filteredEnabled?[['filteredFields','筛选结果字段']]:[])];
       for (const [value,label] of choices) { const button = make('button', current().role === value ? 'active' : '', label); button.onclick = () => { current().role = value; renderToolbar(); renderGrid(config(activeSource()).report); }; bar.append(button); }
       // 选中反馈就在网格正上方——chips 区可能在屏幕外, 这里给即时可见的确认
@@ -279,7 +305,7 @@
           : '这张表是纵向布局：字段排在顶部列号上，请点击列号选择；如需按行处理，可先在上方把方向改为横向。');
         return;
       }
-      if (!isPrimary(source)) { notice('请先点选底表文件，再选择用于拆分或回填的字段。'); return; }
+      if (!isPrimary(source)) { notice('请先点选底稿文件，再选择用于拆分或回填的字段。'); return; }
       if (!cfg.report.fields.some(f => f.index === index)) { notice('这个行或列不在当前字段范围内。请先调整范围。'); return; }
       const s = current();
       if (state.mode === 'reconcile' && s.role === 'groupField') { s.groupField = s.groupField === index ? null : index; }
@@ -289,13 +315,13 @@
     }
     function pickHint() {
       $('selection-hint').classList.toggle('picking', !!state.picking);
-      $('selection-hint').textContent = state.picking === 'cell' ? '点一个单元格，将它的内容加入输出名称。' : state.picking ? `${state.picking === 'header' ? '表头' : '数据'}框选：${state.firstCorner ? '已选 '+cellRef(state.firstCorner.row,state.firstCorner.col)+'，请点另一角。' : '请点区域的第一个角。'} 再点框选按钮可取消。` : config(activeSource())?.selection_origin==='manual'?'已应用手动范围。可输入坐标，或点区域的两个角进行调整。':'范围由程序自动识别，可直接预览结果；需要调整时再输入坐标或框选。';
+      $('selection-hint').textContent = state.picking === 'cell' ? '点一个格子，以它的文字命名。' : state.picking ? `${state.picking === 'header' ? '标题行' : '数据行'}圈选：${state.firstCorner ? '已点 '+cellRef(state.firstCorner.row,state.firstCorner.col)+'，请点对角单元格。' : '先点一个角。'} 再点按钮取消。` : config(activeSource())?.selection_origin==='manual'?'已按圈选应用；如需调整可修改上方范围。':'范围已自动识别，可直接预览；如需调整请修改上方范围。';
     }
     function startPick(kind) { if (!config(activeSource())) return; state.picking = state.picking === kind ? null : kind; state.firstCorner = null; pickHint(); }
     function cellClicked(row,col,cell) {
       if (!state.picking) { $('selection-hint').textContent = `${cellRef(row,col)} · ${text(cell?.formula || cell?.value || '')}`; return; }
       if (state.picking === 'cell') {
-        if (!isPrimary(activeSource())) { notice('请先回到底表选择命名单元格。'); return; }
+        if (!isPrimary(activeSource())) { notice('请先回到底稿选择命名单元格。'); return; }
         const ref = cellRef(row,col); if (!current().group.some(g => g.kind === 'cell' && g.ref === ref)) current().group.push({kind:'cell',ref,expected:cell?.value});
         state.picking = null; invalidate(); renderRoles(); pickHint(); return;
       }
@@ -402,8 +428,8 @@
     function renderOptions() {
       const s=current(),o=s.options;
       root.querySelectorAll('[data-mode]').forEach(b=>{b.classList.toggle('active',b.dataset.mode===state.mode);b.setAttribute('aria-pressed',String(b.dataset.mode===state.mode));});
-      $('source-title').textContent={merge:'1. 选择要合并的文件',split:'1. 选择要拆分的表格',reconcile:'1. 选择接收反馈的底表'}[state.mode];
-      $('source-help').textContent=state.mode==='merge'?'拖入 Excel 文件或文件夹，也可以从电脑选择。':'选择一份 Excel 文件，然后在原表上选择工作表和范围。';
+      $('source-title').textContent={merge:'第 1 步 · 选择文件',split:'第 1 步 · 选择文件',reconcile:'第 1 步 · 选底稿与反馈'}[state.mode];
+      $('source-help').textContent=state.mode==='merge'?'可一次多选，也可直接拖入。':'底稿：要保留并更新的表。';
       $('btn-add-folder').classList.toggle('hidden',state.mode!=='merge');$('reconcile-sources').classList.toggle('hidden',state.mode!=='reconcile');
       for(const mode of ['merge','split','reconcile'])$(mode+'-options').classList.toggle('hidden',mode!==state.mode);
       root.querySelectorAll('[name="merge-output"]').forEach(input=>input.checked=input.value===o.mode);
@@ -415,13 +441,15 @@
     async function switchMode(mode) {
       if(state.busy||state.merging||!sessions[mode])return;
       state.mode=mode;state.gridRequest++;state.operationRequest++;state.rangeDirty=false;notice();renderOptions();
+      // 切模式是场景重置: 立即关闭, 不播退场动画
+      $('done-pane').classList.remove('closing');$('progress-pane').classList.remove('closing');
       $('done-pane').classList.add('hidden');$('progress-pane').classList.add('hidden');syncModals();
       $('result-pane').classList.add('hidden');$('workspace').classList.add('hidden');
       const s=current(),source=activeSource()||s.files[0];if(source)await showSource(source,s.active?.bucket||'files',s.active?.index||0);
       if(s.result&&s.previewVersion===s.version)renderResult(s.result);
     }
     async function buildPayload() {
-      const s=current();if(state.rangeDirty)throw Error('请先应用表头与数据范围。');if(!s.files.length)throw Error('请先选择文件。');if(s.schemeProblems.length)throw Error('方案中仍有无法唯一对应的字段，请补选并确认当前字段。');
+      const s=current();if(state.rangeDirty)throw Error('请先应用表头与数据范围。');if(!s.files.length)throw Error('请先选择文件。');if(s.schemeProblems.length)throw Error('设置中有未能唯一对应的字段，请补选并确认。');
       if(mappingReviews().length)throw Error('以下表头已变化，请打开相应工作表核对字段对应：'+mappingReviews().join('、'));
       if(state.mode==='merge'){
         const selections=[];
@@ -487,7 +515,8 @@
       }else $('result-summary').textContent=state.mode==='reconcile'?`${totals.records??'—'} 条底表记录 · ${totals.changes??changes.length} 处变化 · ${totals.additions??changes.filter(c=>c.kind==='new').length} 条新增${totals.additions_skipped?` · ${totals.additions_skipped} 条新增未并入`:''} · ${totals.missing??report.missing?.length??0} 条未收到反馈`:`${groups.length} 个输出文件 · ${totals.records??totals.rows??groups.reduce((n,g)=>n+(Number(g.count)||0),0)} 条记录`;
       const warnings=[...(report.warnings||[])];if(report.retained_sheets?.length)warnings.push('同时保留依赖工作表：'+report.retained_sheets.map(s=>typeof s==='string'?s:s.name).join('、'));
       const messages=warningMessages(warnings),warningBox=$('result-warnings');warningBox.replaceChildren();warningBox.classList.toggle('hidden',!messages.length);
-      if(messages.length){const heading=make('b','',`兼容与处理提示 · ${messages.length} 项${report.can_export?' · 可继续导出':''}`),list=make('ul');for(const message of messages)list.append(make('li','',message));warningBox.append(heading,list);}
+      // 默认折叠: 大文件的兼容提示可能几十条, 不折叠会把下方预览挤到很深
+      if(messages.length){const summary=make('summary','',`兼容与处理提示 · ${messages.length} 项${report.can_export?' · 可继续导出':''}（点开查看）`),list=make('ul');for(const message of messages)list.append(make('li','',message));warningBox.append(summary,list);}
       const panel=$('issues-panel');panel.replaceChildren();panel.classList.toggle('hidden',!issues.length);
       if(issues.length)panel.append(make('b','',report.can_export?'可选处理与提示':'请集中处理以下问题'));
       for(const issue of issues){
@@ -542,23 +571,23 @@
       if(!out)out=mode==='split'?await toolbox.selectOutputFolder():await toolbox.saveDialog(`${mode==='merge'?'合并结果':'回填结果'}_${stamp}.xlsx`);
       if(!out)return false;if(version!==s.version||mode!==state.mode){notice('设置已发生变化，请重新预览。',true);return false;}
       payload[mode==='split'?'out_dir':'out']=out;
-      state.merging=true;$('progress-pane').classList.remove('hidden');syncModals();$('progress-title').textContent='正在导出…';$('prog-file').textContent='';$('prog-count').textContent='';$('prog-bar').style.width='0%';
+      state.merging=true;openPane('progress-pane');$('progress-title').textContent='正在导出…';$('prog-file').textContent='';$('prog-count').textContent='';$('prog-bar').style.width='0%';
       state.offProgress=toolbox.onProgress?.(m=>{if(state.disposed)return;$('prog-file').textContent=m.current||'';$('prog-count').textContent=m.total?`${m.file||0} / ${m.total}`:'';$('prog-bar').style.width=`${Math.min(99,Math.round((m.file||0)/Math.max(1,m.total||1)*100))}%`;});
       try{
         const report=await call({merge:'merge',split:'split',reconcile:'reconcile'}[mode],payload);
         if(report.exported===false||report.can_export===false){s.result=report;s.payload=null;s.previewVersion=-1;renderResult(report);throw Error('文件尚未导出，请处理报告中的问题后重新预览。');}
         if(!state.disposed)showDone(report,out);return true;
       }catch(error){if(!state.disposed)fail(error);return false;}
-      finally{state.offProgress?.();state.offProgress=null;state.merging=false;if(!state.disposed){$('progress-pane').classList.add('hidden');syncModals();updateAction();}}
+      finally{state.offProgress?.();state.offProgress=null;state.merging=false;if(!state.disposed){closePane('progress-pane');updateAction();}}
     }
     function showDone(report,out) {
-      $('done-pane').classList.remove('hidden');syncModals();$('done-icon').textContent=report.cancelled?'—':'✓';$('done-title').textContent=report.cancelled?'处理已取消':'导出完成';
+      openPane('done-pane');$('done-icon').textContent=report.cancelled?'—':'✓';$('done-title').textContent=report.cancelled?'处理已取消':'导出完成';
       const totals=report.totals||{};$('done-stats').textContent=state.mode==='split'?`${report.files?.length??report.outputs?.length??current().result?.groups?.length??0} 个文件`:`${totals.rows_written??totals.records??current().result?.totals?.records??''} 条记录${report.changes_path?' · 已生成变更记录':''}`;
       const location=report.output||report.out||out,outputs=report.outputs||(state.mode==='split'?report.files?.filter(f=>typeof f==='object'&&f.path).map(f=>f.path):null)||[location];
       $('done-out').textContent=outputs.map(text).join('\n');$('done-out').style.whiteSpace='pre-wrap';$('report-detail').textContent=JSON.stringify(report,null,2);$('report-detail').classList.add('hidden');
       const messages=warningMessages([...(current().result?.warnings||[]),...(report.warnings||[])]);
-      $('done-warnings').classList.toggle('hidden',!messages.length);$('done-warnings').open=true;
-      $('done-warnings-title').textContent=`兼容与处理提示 · ${messages.length} 项`;
+      $('done-warnings').classList.toggle('hidden',!messages.length);$('done-warnings').open=false;
+      $('done-warnings-title').textContent=`兼容与处理提示 · ${messages.length} 项（点开查看）`;
       $('done-warnings-list').replaceChildren(...messages.map(message=>make('li','',message)));
       if(report.filtered_output_path)$('done-stats').textContent+=' · 已同时导出筛选结果';
       $('btn-open-folder').onclick=()=>toolbox.showInFolder(typeof location==='string'?location:out);
@@ -573,7 +602,7 @@
     }
     function showSchemeProblems() {
       const s=current();if(!s.schemeProblems.length)return;
-      notice('以下内容无法唯一对应，已停止复用，请在原表上补选：\n'+s.schemeProblems.join('；'),true);
+      notice('以下内容无法唯一对应，已停止套用，请在原表上补选：\n'+s.schemeProblems.join('；'),true);
       const button=make('button','','已补选，使用当前字段');button.style.margin='10px 0 0';button.onclick=()=>{s.schemeProblems=[];invalidate();notice('已采用当前手动选择的字段，请重新预览核对。');};$('notice').append(make('br'),button);
       updateAction();
     }
@@ -598,7 +627,7 @@
       const s=current(),cfg=schemeConfig(),name=$('scheme-name').value.trim();if(!name){notice('请先给方案起一个名字。',true);return;}if(!cfg||state.rangeDirty){notice('请先查看并确认底表或模板的表头与数据范围。',true);return;}if(s.schemeProblems.length){showSchemeProblems();return;}
       const mappings=[];for(const source of [...s.files,...s.feedback,...(s.baseline?[s.baseline]:[])])for(const [sheet,c]of Object.entries(source.configs)){if(!Object.keys(c.field_map).length)continue;const entries=Object.entries(c.field_map).map(([target,index])=>({target:identity(cfg.report.fields.find(f=>f.index===Number(target))),source:index==null?null:identity(c.report.fields.find(f=>f.index===index))}));mappings.push({signature:c.report.signature,fields:c.report.fields.map(identity),entries,sheet});}
       const existing=readSchemes(),old=existing.find(x=>x.name===name&&x.mode===state.mode),scheme={version:1,id:old?.id||String(Date.now()),name,mode:state.mode,structure:{axis:cfg.selection.axis,depth:cfg.selection.header_end-cfg.selection.header_start+1,fields:cfg.report.fields.map(identity)},roles:captureRoles(),options:clone(s.options),groupMode:s.groupMode,filteredEnabled:s.filteredEnabled,blankGroup:s.blankGroup,region:{...cfg.selection,data_gap:cfg.selection.data_start-cfg.selection.header_end-1,tail:Math.max(0,(cfg.selection.axis==='rows'?cfg.report.max_row:cfg.report.max_column)-cfg.selection.data_end)},mappings};
-      writeSchemes([...existing.filter(x=>x.id!==scheme.id),scheme]);renderSchemes();$('scheme-select').value=scheme.id;notice('方案已保存在本机。下次会先核对表头，再应用字段设置。');
+      writeSchemes([...existing.filter(x=>x.id!==scheme.id),scheme]);renderSchemes();$('scheme-select').value=scheme.id;notice('设置已保存。应用时会先核对表头结构，再套用字段设置。');
     }
     async function locateSchemeRegion(scheme) {
       const source=schemeSource(),sheet=schemeSheet(),cfg=schemeConfig(),saved=scheme.region;
@@ -632,13 +661,13 @@
       return loadSource(source,sheet,{row:1,col:1},selected);
     }
     async function applyScheme(){
-      const scheme=readSchemes().find(s=>s.id===$('scheme-select').value),s=current();let cfg=schemeConfig();if(!scheme){notice('请先选择已保存的方案。');return false;}if(!cfg){notice('请先查看底表或模板并确认表头范围。',true);return false;}
+      const scheme=readSchemes().find(s=>s.id===$('scheme-select').value),s=current();let cfg=schemeConfig();if(!scheme){notice('请先选择已保存的设置。');return false;}if(!cfg){notice('请先查看底稿或模板并确认标题行范围。',true);return false;}
       if(state.rangeDirty){notice('请先应用当前范围，再核对方案。',true);return false;}
       invalidate();
       const mode=state.mode,version=s.version;
       cfg=await locateSchemeRegion(scheme);
       if(mode!==state.mode||version!==s.version||state.disposed)return false;
-      if(!cfg){clearRoles();s.schemeProblems=['表头结构无法唯一对应，请框选范围并补选字段'];showSchemeProblems();renderRoles();renderFilters();return false;}
+      if(!cfg){clearRoles();s.schemeProblems=['表头结构无法唯一对应，请圈选范围并补选字段'];showSchemeProblems();renderRoles();renderFilters();return false;}
       clearMappings();
       s.options={...s.options,...scheme.options,templateIndex:s.options.templateIndex,templateSheet:s.options.templateSheet};s.groupMode=scheme.groupMode||'combination';s.filteredEnabled=!!scheme.filteredEnabled;s.blankGroup=scheme.blankGroup||'separate';
       const problems=restoreRoles(scheme.roles,cfg.report.fields);
@@ -680,11 +709,13 @@
     $('opt-template').onchange=()=>{current().options.templateIndex=Number($('opt-template').value);current().options.templateSheet=null;renderFiles();clearMappings();invalidate();renderMapping();};
     $('opt-template-sheet').onchange=()=>{current().options.templateSheet=$('opt-template-sheet').value;clearMappings();invalidate();renderMapping();};
     $('mapping-reviewed').onclick=()=>{const cfg=config(activeSource());if(!cfg)return;cfg.mapping_review=false;invalidate('已采用当前字段对应，请重新预览核对。');renderMapping();};
+    document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!$('done-pane').classList.contains('hidden')&&!state.busy&&!state.merging)closePane('done-pane');});
     $('zoom-out').onclick=()=>{gridZoom.mode='manual';gridZoom.scale=Math.max(GRID_MIN_ZOOM,(gridZoom.scale||1)-0.1);applyGridZoom();};
     $('zoom-in').onclick=()=>{gridZoom.mode='manual';gridZoom.scale=Math.min(2,(gridZoom.scale||1)+0.1);applyGridZoom();};
     $('zoom-fit').onclick=()=>{gridZoom.mode='fit';applyGridZoom();};
-    window.addEventListener('resize',()=>{if(gridZoom.mode==='fit')applyGridZoom();});
-    $('btn-preview').onclick=previewResult;$('btn-export').onclick=()=>exportResult();$('btn-cancel').onclick=()=>{toolbox.cancel?.();$('progress-title').textContent='正在停止…';};$('btn-again').onclick=()=>{$('done-pane').classList.add('hidden');syncModals();};$('btn-report').onclick=()=>$('report-detail').classList.toggle('hidden');
+    let zoomResizeTimer=null;
+    window.addEventListener('resize',()=>{if(gridZoom.mode!=='fit')return;clearTimeout(zoomResizeTimer);zoomResizeTimer=setTimeout(applyGridZoom,120);});
+    $('btn-preview').onclick=previewResult;$('btn-export').onclick=()=>exportResult();$('btn-cancel').onclick=()=>{toolbox.cancel?.();$('progress-title').textContent='正在停止…';};$('btn-again').onclick=()=>closePane('done-pane');$('btn-report').onclick=()=>$('report-detail').classList.toggle('hidden');
     $('scheme-save').onclick=saveScheme;$('scheme-apply').onclick=applyScheme;$('scheme-delete').onclick=()=>{const id=$('scheme-select').value;if(!id)return;writeSchemes(readSchemes().filter(s=>s.id!==id));renderSchemes();notice('已删除所选方案。');};
     const drop=$('dropzone');drop.ondragover=e=>{if([...e.dataTransfer.types].includes('Files')){e.preventDefault();drop.classList.add('dragover');}};drop.ondragleave=()=>drop.classList.remove('dragover');drop.ondrop=async e=>{if(!e.dataTransfer.files.length)return;e.preventDefault();drop.classList.remove('dragover');await addFromPaths([...e.dataTransfer.files].map(file=>toolbox.pathForFile(file)).filter(Boolean));};
     dispose=()=>{state.disposed=true;state.gridRequest++;state.operationRequest++;state.offProgress?.();delete window.__emTest;delete window.__excelTest;};

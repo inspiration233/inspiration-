@@ -98,7 +98,7 @@
 .excel-tool .sample-tabs{display:flex;gap:7px;overflow:auto;padding:6px 0 11px}
 .excel-tool .sample-tabs button{white-space:nowrap;font-size:12px;padding:6px 10px}
 .excel-tool .sample-tabs button.active{color:white;background:var(--accent)}
-.excel-tool .sample-scroll,.excel-tool .changes-scroll{overflow:auto;max-height:400px;border:1px solid var(--hairline-2);border-radius:8px;margin-top:8px}
+.excel-tool .sample-scroll,.excel-tool .changes-scroll{overflow:auto;max-height:440px;border:1px solid var(--hairline-2);border-radius:8px;margin-top:8px}
 .excel-tool .changed-value{color:#dc2626;font-weight:600}
 .excel-tool .pane{position:fixed;inset:44px 0 0;z-index:30;display:flex;align-items:center;justify-content:center;padding:25px;background:var(--glass-1-bg);backdrop-filter:blur(14px)}
 .excel-tool .progress-card,.excel-tool .done-card{border-radius:20px;padding:35px;max-width:720px;width:100%;text-align:center}
@@ -130,7 +130,6 @@
 .excel-tool .role-summary .hint{display:block;margin:2px 0 6px;font-size:11px;color:var(--ink-3,var(--ink-2))}
 .excel-tool .intro-hint{margin-bottom:10px}
 /* ---------------- 预览缩放 ---------------- */
-.excel-tool .grid-scale{position:relative}
 .excel-tool .zoom-level{min-width:56px;text-align:center;font-variant-numeric:tabular-nums;color:var(--text-2)}
 .excel-tool .footer-sep{width:1px;height:16px;background:var(--hairline-2);margin:0 3px;align-self:center}
 /* 常用选项行(不折叠)与常用复选框行 */
@@ -144,4 +143,29 @@
 body.modal-open #stage{overflow:hidden}
 /* 大屏/全屏布局: 更宽的容器与更高的预览区 */
 @media(min-width:1720px){.excel-tool{max-width:1580px}.excel-tool .advanced-grid{grid-template-columns:1fr 1fr 1fr}}
-@media(min-height:940px){.excel-tool .grid-wrap{max-height:640px}.excel-tool .sample-scroll,.excel-tool .changes-scroll{max-height:560px}}
+@media(min-height:940px){.excel-tool .grid-wrap{max-height:640px}.excel-tool .sample-scroll,.excel-tool .changes-scroll{max-height:640px}}
+
+/* ---------------- 动效(苹果式: 弹性进入/退场, 开关成对) ---------------- */
+@keyframes pane-in{from{opacity:0}to{opacity:1}}
+@keyframes pane-card-in{from{opacity:0;transform:translateY(28px) scale(.93)}to{opacity:1;transform:none}}
+@keyframes pane-out{from{opacity:1}to{opacity:0}}
+@keyframes pane-card-out{from{opacity:1;transform:none}to{opacity:0;transform:translateY(12px) scale(.96)}}
+.excel-tool .pane:not(.hidden):not(.closing){animation:pane-in .24s var(--ease)}
+.excel-tool .pane:not(.hidden):not(.closing) .progress-card,
+.excel-tool .pane:not(.hidden):not(.closing) .done-card{animation:pane-card-in .46s var(--spring)}
+.excel-tool .pane.closing{animation:pane-out .2s var(--ease) forwards;pointer-events:none}
+.excel-tool .pane.closing .progress-card,
+.excel-tool .pane.closing .done-card{animation:pane-card-out .2s var(--ease) forwards}
+@keyframes check-pop{0%{transform:scale(.2);opacity:0}55%{transform:scale(1.14)}100%{transform:scale(1);opacity:1}}
+.excel-tool .done-check{animation:check-pop .55s var(--spring) both}
+/* 分区首次出现: 轻微上浮(已可见时不重放) */
+.excel-tool #operation-options:not(.hidden),.excel-tool #result-pane:not(.hidden),
+.excel-tool .issues-panel:not(.hidden),.excel-tool #result-warnings:not(.hidden){animation:rise-in .32s var(--ease)}
+
+/* 兼容提示默认折叠 */
+.excel-tool #result-warnings summary{cursor:pointer;font-weight:600;padding:2px 0;user-select:none}
+.excel-tool #result-warnings ul{margin:8px 0 0;padding-left:20px}
+
+/* 带输入框的选项行: 不被压缩裁剪 */
+.excel-tool .nowrap-label{flex-wrap:wrap;min-width:0}
+.excel-tool .nowrap-label input{flex-shrink:0}

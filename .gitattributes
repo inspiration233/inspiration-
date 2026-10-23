@@ -3,3 +3,7 @@
 *.xls binary
 *.png binary
 *.icns binary
+
+# mac/linux 启动脚本必须保持 LF, CRLF 会导致 bash 无法执行
+*.sh text eol=lf
+*.command text eol=lf

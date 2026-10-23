@@ -47,6 +47,9 @@
 
 * { box-sizing: border-box; }
 
+/* 按压反馈: 所有按钮按下轻微缩放(松开弹性回弹) */
+button:not(:disabled):active { transform: scale(.96); }
+
 html, body {
   margin: 0;
   height: 100%;
@@ -222,7 +225,7 @@ select:focus, input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px r
 @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
 .anim-fade { animation: fade-in 0.2s var(--ease) both; }
 
-.view-enter { animation: view-in 0.32s var(--ease) both; }
+.view-enter { animation: view-in 0.32s var(--ease) backwards; }
 @keyframes view-in {
   from { opacity: 0; transform: translateX(24px); }
   to   { opacity: 1; transform: translateX(0); }
@@ -266,18 +269,11 @@ select:focus, input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px r
 /* ---------------- 状态隐藏（必须存在：所有面板显隐依赖） ---------------- */
 .hidden { display: none !important; }
 
-/* ---------------- 拉伸期间的临时材质降级（shell.js 挂 .resizing） ----------------
-   极光隐藏而非去模糊(去模糊会闪现生硬色斑), 玻璃摘模糊, 动画全停。
-   resize 停止 160ms 后自动恢复, 用户无感知。 */
-.resizing *,
-.resizing *::before,
-.resizing *::after {
+/* ---------------- 拉伸期间（shell.js 挂 .resizing） ----------------
+   只冻结动画(极光漂移/加载旋转), 不改任何可见样式——
+   任何"隐藏/去模糊再恢复"都会被看成"闪一下才适配"。
+   冻结动画让合成器在拉伸中少做事, 视觉保持完全连续。 */
+.resizing .aurora span,
+.resizing .spinner {
   animation-play-state: paused !important;
-  transition: none !important;
-}
-.resizing .aurora { opacity: 0 !important; }
-.resizing .glass-1,
-.resizing .glass-2 {
-  backdrop-filter: none !important;
-  -webkit-backdrop-filter: none !important;
 }

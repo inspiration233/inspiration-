@@ -30,4 +30,5 @@ contextBridge.exposeInMainWorld('toolbox', {
   setBackground: (color) => ipcRenderer.send('win:set-bg', color),
   // 应用信息
   info: () => ipcRenderer.invoke('app:info'),
+  setAngle: (value) => ipcRenderer.invoke('gpu:set-angle', value),
 });

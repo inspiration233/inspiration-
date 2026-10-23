@@ -31,7 +31,7 @@
     clearTimeout(resizeTimer);
     resizeTimer = setTimeout(() => {
       document.documentElement.classList.remove('resizing');
-    }, 160);
+    }, 200);
   }, { passive: true });
 
 
@@ -83,6 +83,9 @@
     stage.innerHTML = '';
     const view = document.createElement('div');
     view.className = 'view-enter';
+    // 动画结束后必须摘掉: both 填充会永久残留 transform(哪怕位移为 0),
+    // fixed 定位的弹窗会被它劫持成相对内容层定位(整页高度), 弹到窗口外
+    view.addEventListener('animationend', () => view.classList.remove('view-enter'), { once: true });
     const [html] = await Promise.all([fetch(m.view).then((r) => r.text())]);
     view.innerHTML = html;
     stage.appendChild(view);
@@ -128,13 +131,23 @@
           <option value="auto">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option>
         </select></span></div>
       <div class="kv"><span>减少动效（含材质降级）</span><span><span class="switch" id="set-motion"></span></span></div>
+      <div class="kv"><span>图形后端（拉伸窗口黑闪时可尝试切换）</span>
+        <span><select id="set-angle">
+          <option value="">默认（推荐）</option><option value="d3d11">Direct3D 11</option><option value="d3d9">Direct3D 9</option><option value="gl">OpenGL</option>
+        </select></span></div>
       <div class="sub" style="margin-top:16px">各工具的专属选项会按当前操作显示在工具页内。</div>`;
-    overlay.classList.remove('hidden');
+    overlay.classList.remove('closing');overlay.classList.remove('hidden');
     const sel = overlayPanel.querySelector('#set-theme');
     sel.value = savedTheme;
     sel.onchange = () => {
       localStorage.setItem('theme', sel.value);
       location.reload();
+    };
+    const angleSel = overlayPanel.querySelector('#set-angle');
+    angleSel.value = (window.toolbox && window.__lastInfo?.angleBackend) || '';
+    angleSel.onchange = () => {
+      localStorage.setItem('anglePending', angleSel.value);
+      try { window.toolbox.setAngle(angleSel.value); } catch (e) { location.reload(); }
     };
     const sw = overlayPanel.querySelector('#set-motion');
     sw.classList.toggle('on', reduceMotion);
@@ -153,10 +166,18 @@
       <div class="kv"><span>Excel 处理引擎</span><span>M1 (sidecar)</span></div>
       <div class="kv"><span>平台</span><span>${info.platform} · Electron ${info.electron}</span></div>
       <div class="sub" style="margin-top:14px">完全离线运行，文件不出本机。检查更新请访问内部渠道。</div>`;
-    overlay.classList.remove('hidden');
+    overlay.classList.remove('closing');overlay.classList.remove('hidden');
   }
 
-  overlay.onclick = (e) => { if (e.target === overlay) overlay.classList.add('hidden'); };
+  const closeOverlay = () => {
+    if (overlay.classList.contains('hidden') || overlay.classList.contains('closing')) return;
+    overlay.classList.add('closing');
+    const finish = () => { overlay.classList.remove('closing'); overlay.classList.add('hidden'); };
+    overlay.addEventListener('animationend', e => { if (e.target === overlay) finish(); }, { once: true });
+    setTimeout(finish, 260);
+  };
+  overlay.onclick = (e) => { if (e.target === overlay) closeOverlay(); };
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') closeOverlay(); });
   document.getElementById('btn-settings').onclick = openSettings;
   document.getElementById('btn-about').onclick = openAbout;
 
@@ -164,7 +185,9 @@
   loadManifests().then(renderHome);
 
   // GPU 软件渲染检测 → 自动材质降级（UI设计说明 §7：停用模糊与极光漂移）
+  window.__lastInfo = null;
   toolbox.info().then((info) => {
+    window.__lastInfo = info;
     if (info.gpuCompositing === 'disabled_software') {
       document.documentElement.classList.add('reduce-motion');
       tbToast('检测到软件渲染，已自动降级动效与材质以保证流畅', 'warn');

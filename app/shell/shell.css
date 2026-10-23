@@ -72,6 +72,9 @@
   justify-content: center;
 }
 .overlay.hidden { display: none; }
+.overlay:not(.hidden) { animation: fade-in .2s var(--ease); }
+.overlay.closing { animation: overlay-out .18s var(--ease) forwards; pointer-events: none; }
+@keyframes overlay-out { to { opacity: 0; } }
 .overlay .panel {
   width: min(560px, calc(100vw - 80px));
   max-height: calc(100vh - 120px);

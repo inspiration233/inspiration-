@@ -1,16 +1,44 @@
 // -*- coding: utf-8 -*-
 // 工具箱壳 · Electron 主进程：无边框窗口 / Python sidecar 管理 / 对话框与路径 IPC
-const { app, BrowserWindow, ipcMain, dialog, shell: shellOs, nativeTheme } = require('electron');
+const { app, BrowserWindow, Menu, ipcMain, dialog, shell: shellOs, nativeTheme } = require('electron');
 const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 
 const ROOT = path.resolve(__dirname, '..');            // 仓库根（engine 所在）
-const PYTHON = process.env.TOOLBOX_PYTHON || 'python';
+// Python 解释器发现: 环境变量优先, 其次项目内 venv(mac/linux 在 bin/, Windows 在 Scripts/),
+// 最后回退系统命令(python3 优先于 python, macOS 常无 python 别名)
+function discoverPython() {
+  if (process.env.TOOLBOX_PYTHON) return process.env.TOOLBOX_PYTHON;
+  const candidates = process.platform === 'win32'
+    ? [path.join(ROOT, '.venv', 'Scripts', 'python.exe'), path.join(ROOT, 'venv', 'Scripts', 'python.exe')]
+    : [path.join(ROOT, '.venv', 'bin', 'python'), path.join(ROOT, 'venv', 'bin', 'python')];
+  for (const candidate of candidates) {
+    try { if (fs.existsSync(candidate)) return candidate; } catch { /* 忽略 */ }
+  }
+  return process.platform === 'win32' ? 'python' : 'python3';
+}
+const PYTHON = discoverPython();
 const IS_SMOKE = process.argv.includes('--smoke');
 
 // 已知问题缓解: Windows 下窗口遮挡计算会造成还原/缩放白闪
-app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
+// 图形后端可配置(userData/angle.txt: 空=默认 | d3d9 | gl | d3d11)。
+// 拉伸黑闪多为"当前通路×驱动"的兼容缺陷, 换一条通路即可绕开; 设置中心可切换。
+const ANGLE_BACKENDS = new Set(['', 'd3d9', 'gl', 'd3d11']);
+let angleBackend = '';
+try {
+  const saved = fs.readFileSync(path.join(app.getPath('userData'), 'angle.txt'), 'utf8').trim();
+  if (ANGLE_BACKENDS.has(saved)) angleBackend = saved;
+} catch { /* 未配置 */ }
+// Windows 默认走 Direct3D 9(实测 D3D11 通路在部分 NVIDIA 驱动上拉伸卡顿/黑闪);
+// 设置中心仍可改回。
+if (!angleBackend && process.platform === 'win32') angleBackend = 'd3d9';
+if (angleBackend) app.commandLine.appendSwitch('use-angle', angleBackend);
+
+// CalculateNativeWinOcclusion: 缓解还原/缩放白闪(Windows 遮挡计算)。
+// CanvasOopRasterization: 日志出现 "GPU state invalid after WaitForGetOffsetInRange"
+// (GPU 命令缓冲重置→合成停帧→拉伸露黑), 与 NVIDIA 上的画布外光栅化已知问题吻合, 关闭。
+app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion,CanvasOopRasterization');
 const themeBg = () => (nativeTheme.shouldUseDarkColors ? '#0f1420' : '#eef1f7');
 const IS_WORKBENCH_TEST = process.argv.includes('--workbench-test') || process.argv.includes('--uitest');
 if (IS_WORKBENCH_TEST || IS_SMOKE) {
@@ -121,10 +149,35 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       spellcheck: false,
+      backgroundThrottling: false,   // 拉伸窗口期间保持重绘, 减少黑屏暴露
     },
   });
   win.loadFile(path.join(__dirname, 'shell', 'index.html'));
   win.once('ready-to-show', () => { if (!IS_WORKBENCH_TEST && !IS_SMOKE) win.show(); });
+
+  // 精简中文应用菜单: 去掉 Electron 默认菜单(英文/外链)。
+  // Windows/Linux: 菜单栏默认隐藏, 按 Alt 唤出(系统惯例), 复制粘贴等快捷键保持可用;
+  // macOS: 菜单在屏幕顶部系统栏(不在窗口上), 放应用菜单/编辑/视图/窗口四组。
+  const editMenu = { label: '编辑', submenu: [
+    { role: 'undo', label: '撤销' }, { role: 'redo', label: '重做' }, { type: 'separator' },
+    { role: 'cut', label: '剪切' }, { role: 'copy', label: '复制' }, { role: 'paste', label: '粘贴' },
+    { role: 'selectAll', label: '全选' }] };
+  const viewMenu = { label: '视图', submenu: [
+    { role: 'reload', label: '刷新页面' }, { role: 'toggleDevTools', label: '开发者工具' }] };
+  const windowMenu = { label: '窗口', submenu: [
+    { role: 'minimize', label: '最小化' }, { role: 'close', label: '关闭' }] };
+  const template = process.platform === 'darwin'
+    ? [{ role: 'appMenu', label: '工具箱', submenu: [
+        { role: 'about', label: '关于工具箱' }, { type: 'separator' },
+        { role: 'hide', label: '隐藏工具箱' }, { role: 'hideOthers', label: '隐藏其他' },
+        { type: 'separator' }, { role: 'quit', label: '退出工具箱' }] },
+       editMenu, viewMenu, windowMenu]
+    : [editMenu, viewMenu, windowMenu];
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+  if (process.platform !== 'darwin') {
+    win.setMenuBarVisibility(false);
+    win.setAutoHideMenuBar(true);
+  }
 
   if (IS_WORKBENCH_TEST) {
     win.webContents.once('did-finish-load', async () => {
@@ -256,6 +309,14 @@ ipcMain.on('win:ctl', (_e, action) => {
   else if (action === 'close') win.close();
 });
 
+ipcMain.handle('gpu:set-angle', (_e, value) => {
+  if (!ANGLE_BACKENDS.has(value)) throw Error('未知的图形后端：' + value);
+  fs.writeFileSync(path.join(app.getPath('userData'), 'angle.txt'), value, 'utf8');
+  app.relaunch();
+  app.exit(0);
+  return 'relaunching';
+});
+
 ipcMain.handle('app:info', () => {
   let gpu = 'unknown';
   try { gpu = app.getGPUFeatureStatus().gpu_compositing; } catch { /* 忽略 */ }
@@ -264,6 +325,7 @@ ipcMain.handle('app:info', () => {
     platform: process.platform,
     electron: process.versions.electron,
     python: PYTHON,
+    angleBackend,
     gpuCompositing: gpu,        // 'disabled_software' = 软件渲染, 需自动材质降级
   };
 });

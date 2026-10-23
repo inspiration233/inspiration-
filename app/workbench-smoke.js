@@ -96,7 +96,7 @@ for target,headers,row in [(sys.argv[10],['ID','Plan','Done'],['R001',10,6]),(sy
     assert(schemeId,'方案未保存');
     assert(await T.exportResult(P.out+'/split'),'拆分导出失败：'+document.querySelector('#notice').textContent);
     document.querySelector('#btn-again').click();
-    assert(modalHidden(),'拆分完成后有浮层残留');
+    await wait(()=>modalHidden(),'拆分完成后有浮层残留');   // 关闭有退场动画, 等它播完
 
     await T.addPaths({files:[P.shifted]});
     document.querySelector('#scheme-select').value=schemeId;
@@ -187,11 +187,11 @@ for target,headers,row in [(sys.argv[10],['ID','Plan','Done'],['R001',10,6]),(sy
     assert(getComputedStyle(document.querySelector('#issues-panel')).display==='none','纯兼容提示被误放进阻断问题区');
     assert(await T.exportResult(P.out+'/兼容样式合并结果.xlsx'),'有兼容提示的实际导出失败：'+document.querySelector('#notice').textContent);
     const completedWarnings=document.querySelector('#done-warnings');
-    assert(getComputedStyle(completedWarnings).display!=='none'&&completedWarnings.open,'完成页的兼容提示没有直接显示');
+    assert(getComputedStyle(completedWarnings).display!=='none'&&!completedWarnings.open,'完成页的兼容提示应默认折叠');
     assert(document.querySelector('#done-warnings-list').textContent.includes(compatibilityWarning),'导出完成后丢失兼容提示');
     assert(document.querySelector('#done-warnings-list').textContent.includes(workbookWarning),'导出完成后丢失 workbook.xml 扩展提示');
-    completedWarnings.querySelector('summary').click();assert(!completedWarnings.open,'完成页提示不可折叠');
-    completedWarnings.querySelector('summary').click();assert(completedWarnings.open,'完成页提示不能重新展开');
+    completedWarnings.querySelector('summary').click();assert(completedWarnings.open,'完成页提示不可展开');
+    completedWarnings.querySelector('summary').click();assert(!completedWarnings.open,'完成页提示不能重新折叠');
 
     // The template is a worksheet, not the whole file: another sheet needs its own mapping controls.
     await T.switchMode('merge');document.querySelector('#btn-clear').click();

@@ -229,6 +229,26 @@ def test_merged_text_label_auto_shared_and_clips_anchor(tmp_path):
     assert [actual.cell(r, 3).value for r in (2, 3)] == ["事项二", "事项三"]
 
 
+def test_block_shared_numeric_merge_carried_when_slicing_by_sub_row(tmp_path):
+    # 组名列纵向合并 + 组内小行序号, 按(组名,序号)组合拆分:
+    # 落在组名合并块内的数值合并区是块级共用属性, 随保留行自动带上, 不再阻断
+    wb = Workbook(); ws = wb.active
+    ws.append(["序号", "单位", "数值", "金额"])
+    ws.append([1, "甲", 3, 42]); ws.append([2, "甲", 3, 42]); ws.append([3, "甲", 3, 42])
+    ws.append([1, "乙", 5, 77]); ws.append([2, "乙", 5, 77])
+    ws.merge_cells("B2:B4"); ws.merge_cells("B5:B6")
+    ws.merge_cells("C2:C4"); ws.merge_cells("D2:D4"); ws.merge_cells("C5:C6"); ws.merge_cells("D5:D6")
+    payload = save(tmp_path, wb, group_fields=[dict(kind="field", index=2), dict(kind="field", index=1)],
+                   allow_warnings=True)
+    preview = split_preview(payload)
+    assert preview["can_export"], preview["issues"]
+    assert not any(i.get("kind", i.get("code")) == "merged_record" for i in preview["issues"])
+    assert any("共用的数值" in w for w in preview["warnings"])
+    assert split_export(payload)
+    one = next(f for f in preview["groups"] if "甲" in f["label"] and "1" in f["label"])
+    assert one["count"] >= 1
+
+
 def test_numeric_merged_record_cannot_be_relabelled(tmp_path):
     wb = Workbook(); ws = wb.active
     ws.append(["金额", "单位"]); ws.append([100, "甲"]); ws.append([None, "乙"])

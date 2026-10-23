@@ -987,6 +987,18 @@ def _transform(wb, target, s, group, retained, payload, issues, metadata_labels=
                    issues=issues, group=group["id"])
     cached_read, cached_close = _cached_value_reader(payload["path"])
     shared = {str(CellRange(r)) for r in payload.get("shared_label_ranges", [])}
+    # 分组字段自身的合并块(如纵向合并的组名列): 落在块内的数据合并区
+    # 是这组记录共用的属性, 切片拆分时应随保留行带上
+    group_field_indexes = {g["index"] for g in payload.get("group_fields", [])
+                           if isinstance(g, dict) and g.get("kind") == "field"}
+    if mapping.axis == "rows":
+        group_blocks = [(r.min_row, r.max_row) for r in ws.merged_cells.ranges
+                        if r.min_col == r.max_col and r.min_col in group_field_indexes
+                        and r.min_row < r.max_row]
+    else:
+        group_blocks = [(r.min_col, r.max_col) for r in ws.merged_cells.ranges
+                        if r.min_row == r.max_row and r.min_row in group_field_indexes
+                        and r.min_col < r.max_col]
     merges = []
     for rng in list(ws.merged_cells.ranges):
         mapped = mapping.rects(str(rng))
@@ -995,12 +1007,19 @@ def _transform(wb, target, s, group, retained, payload, issues, metadata_labels=
         lo, hi = (rng.min_row, rng.max_row) if mapping.axis == "rows" else (rng.min_col, rng.max_col)
         cell = ws.cell(rng.min_row, rng.min_col)
         if mapping.partial(lo, hi):
-            is_text = isinstance(cell.value, str) and not cell.value.startswith("=")
+            is_formula = cell.data_type == "f" or (
+                isinstance(cell.value, str) and str(cell.value).startswith("="))
+            is_text = isinstance(cell.value, str) and not str(cell.value).startswith("=")
             header_label = str(rng) in metadata_labels and cell.data_type != "f"
+            in_group_block = any(b_lo <= lo and hi <= b_hi for b_lo, b_hi in group_blocks)
             if not header_label and is_text:
                 # 文本合并区跨记录 = 各记录共用的标签(拆分语义下唯一合理解释),
                 # 自动按共享标签保留在各结果中
                 issues.warn(f"合并区 {rng} 跨越保留与移除记录，已按共用标签保留在各结果中。")
+            elif not header_label and in_group_block and not is_formula:
+                # 非文本合并区完整落在分组字段的合并块内(按组内小行切片的形态):
+                # 它是这块记录共用的数值/日期属性, 随保留的行自动带上
+                issues.warn(f"合并区 {rng} 跨越保留与移除记录，内容为该组共用的数值，已随保留的记录带上。")
             elif not header_label:
                 issues.add("merged_record", f"合并区 {rng} 跨越保留与移除记录且内容不是文本标签，请确认这些数据属于哪条记录。",
                            f"{target}!{rng}", group["id"], range=str(rng))
