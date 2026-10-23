@@ -691,7 +691,8 @@ def _rewrite(formula, owner, target, mapping, wb, retained, issues, location, gr
     for token in tokens:
         value = token.value
         if token.type == "OPERAND" and token.subtype == "ERROR" and value == "#REF!":
-            issues.add("broken_reference", "原公式含 #REF!，请先确认引用。", location, group)
+            issues.add("broken_reference", f"公式 {location} 含 #REF!（引用已断，该格在 Excel 里也显示 #REF!）。"
+                       "请先在原表修复或删除这个公式后重试。", location, group)
         if token.type == "OPERAND" and token.subtype == "RANGE":
             sheet, ref, prefix = _qualified(value, owner)
             if not prefix and ref in names:
