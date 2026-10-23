@@ -141,13 +141,9 @@ for target,headers,row in [(sys.argv[10],['ID','Plan','Done'],['R001',10,6]),(sy
     assert(report.changes.some(c=>c.key[0]==='T002'&&c.after===25&&c.marked),'未识别计划调整');
     assert(report.changes.some(c=>c.key[0]==='T005'&&c.marked===false),'正常状态反馈误标红');
     assert(document.querySelectorAll('.changed-value').length>0,'差异没有红字预览');
-    const addition=report.issues.find(i=>i.kind==='addition');
-    assert(addition,'新增记录应要求确认');
-    const issueSelect=[...document.querySelectorAll('#issues-panel select')].find(select=>select.getAttribute('aria-label')===addition.message);
-    assert(issueSelect,'未显示新增记录处理控件');
-    change(issueSelect,'append');
-    await wait(()=>!T.state.busy&&T.current().result?.can_export,'通过界面确认新增并重新预览');
-    assert(T.current().resolutions[addition.id]==='append','界面事件未提交新增处理方式');
+    // 新记录默认自动追加(2026-10-22 用户决策), 界面不再逐条要求确认
+    assert(report.totals.additions>0,'新记录未自动追加：'+JSON.stringify(report.totals));
+    assert(report.can_export&&!report.issues.some(i=>i.kind==='addition'),'自动追加后仍被阻断：'+JSON.stringify(report.issues));
     const missing=T.current().result.missing;
     assert(missing.length>0,'验收应包含未反馈记录');
     const missingDetails=document.querySelector('#missing-records details');

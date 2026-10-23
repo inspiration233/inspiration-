@@ -22,16 +22,22 @@ def apply_selection(src, spec):
     src.field_map_context = (spec or {}).get("field_map_context")
     if not spec or not spec.get("selection"):
         return
+    st = src.structure
+    # 自动模式的选区本来就是引擎结构识别结果的回显(automatic_selection 由
+    # structure 派生), 不得据此重写结构: 重写会用"原始标签键"(同名不去重)
+    # 覆盖读取器的去重键, 破坏重名表头的按位对齐; 合并单元格坐标也会被按
+    # 转置语义改写。结构保持读取器检测结果即可。
+    if spec.get("selection_origin", "manual") == "auto":
+        return
+    if getattr(st, "native_cross", False):
+        raise ValueError("「%s」是横向配置表(记录沿列), 坐标即原表网格, 暂不支持手动框选; 请使用自动识别的范围。" % st.sheet_name)
     if Path(src.path).suffix.lower() != ".xlsx":
         raise ValueError("手动区域处理需 .xlsx 文件；.xls/.csv 可使用原有合并流程")
     wb = load_workbook(src.path, data_only=False)
     try:
         ws = wb[src.sheet_name]
-        raw_selection = (automatic_selection(src.structure, ws.max_row, ws.max_column)
-                         if spec.get("selection_origin") == "auto" else spec["selection"])
-        selected = normalize_selection(raw_selection, ws.max_row, ws.max_column)
+        selected = normalize_selection(spec["selection"], ws.max_row, ws.max_column)
         src.selection = selected
-        st = src.structure
         st.orientation = "horizontal" if selected["axis"] == "columns" else "vertical"
         st.header_row = selected["header_start"]
         st.height = selected["header_end"] - selected["header_start"] + 1
@@ -42,22 +48,13 @@ def apply_selection(src, spec):
         # from a two-level A,B path, even though the rendered label is identical.
         st.key_signatures = [f["match_signature"] for f in metadata]
         st.empty = selected["data_end"] < selected["data_start"]
-        if spec.get("selection_origin", "manual") == "manual":
-            st.low_confidence = False
-            st.warnings = []
-            st.orientation_confident = True
-        elif st.low_confidence:
-            st.warnings = list(st.warnings) + ["表头识别把握较低，请核对表头和数据范围；需要时可在原表上调整。"]
+        st.low_confidence = False
+        st.warnings = []
+        st.orientation_confident = True
         field_offset = selected["field_start"] - 1
         st.field_offset = field_offset
         st.data_start = selected["data_start"]
         st.data_end = selected["data_end"]
-        # auto模式下: 结构检测的data_end_row是数据区域的实际上界,
-        # 不应被selection的max_row覆盖(否则序号占位尾部被读入)
-        detected_end = getattr(st, "data_end_row", 0)
-        if (spec.get("selection_origin") == "auto" and detected_end > 0
-                and st.data_end > detected_end):
-            st.data_end = detected_end
         st.field_end = selected["field_end"]
         merges = []
         for mg in ws.merged_cells.ranges:

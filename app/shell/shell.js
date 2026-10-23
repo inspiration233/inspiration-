@@ -34,10 +34,6 @@
     }, 160);
   }, { passive: true });
 
-  // ---------------- 窗口控制 ----------------
-  document.getElementById('win-min').onclick = () => toolbox.winControl('min');
-  document.getElementById('win-max').onclick = () => toolbox.winControl('max');
-  document.getElementById('win-close').onclick = () => toolbox.winControl('close');
 
   // ---------------- toast ----------------
   window.tbToast = (msg, kind = '') => {

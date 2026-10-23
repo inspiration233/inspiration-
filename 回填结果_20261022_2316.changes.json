@@ -1,0 +1,251 @@
+{
+  "changes": [],
+  "issues": [],
+  "missing": [
+    {
+      "key": [
+        5
+      ],
+      "position": 16,
+      "status": "not_received",
+      "action": "keep_current",
+      "message": "本次未反馈，保留当前内容"
+    },
+    {
+      "key": [
+        6
+      ],
+      "position": 17,
+      "status": "not_received",
+      "action": "keep_current",
+      "message": "本次未反馈，保留当前内容"
+    },
+    {
+      "key": [
+        7
+      ],
+      "position": 18,
+      "status": "not_received",
+      "action": "keep_current",
+      "message": "本次未反馈，保留当前内容"
+    },
+    {
+      "key": [
+        8
+      ],
+      "position": 19,
+      "status": "not_received",
+      "action": "keep_current",
+      "message": "本次未反馈，保留当前内容"
+    },
+    {
+      "key": [
+        9
+      ],
+      "position": 20,
+      "status": "not_received",
+      "action": "keep_current",
+      "message": "本次未反馈，保留当前内容"
+    },
+    {
+      "key": [
+        10
+      ],
+      "position": 21,
+      "status": "not_received",
+      "action": "keep_current",
+      "message": "本次未反馈，保留当前内容"
+    },
+    {
+      "key": [
+        11
+      ],
+      "position": 22,
+      "status": "not_received",
+      "action": "keep_current",
+      "message": "本次未反馈，保留当前内容"
+    },
+    {
+      "key": [
+        12
+      ],
+      "position": 23,
+      "status": "not_received",
+      "action": "keep_current",
+      "message": "本次未反馈，保留当前内容"
+    }
+  ],
+  "warnings": [
+    "合并结果_20261022_0956_XXX.xlsx / 总表 有 1 个同名字段（如 XXX / XXX）无法按标题区分，已按相同列位置对应",
+    "合并结果_20261022_0956_俺弟.xlsx / 总表 有 1 个同名字段（如 XXX / XXX）无法按标题区分，已按相同列位置对应",
+    "合并结果_20261022_0956_期望.xlsx / 总表 有 1 个同名字段（如 XXX / XXX）无法按标题区分，已按相同列位置对应"
+  ],
+  "can_export": true,
+  "fields": [
+    {
+      "index": 1,
+      "title": "序号 / 序号",
+      "path": [
+        "序号",
+        "序号"
+      ]
+    },
+    {
+      "index": 2,
+      "title": "XXX / XXX",
+      "path": [
+        "XXX",
+        "XXX"
+      ]
+    },
+    {
+      "index": 3,
+      "title": "XXX / XXX",
+      "path": [
+        "XXX",
+        "XXX"
+      ]
+    },
+    {
+      "index": 4,
+      "title": "XXX / XXX",
+      "path": [
+        "XXX",
+        "XXX"
+      ]
+    },
+    {
+      "index": 5,
+      "title": "XXX / XXX",
+      "path": [
+        "XXX",
+        "XXX"
+      ]
+    },
+    {
+      "index": 6,
+      "title": "XXX / XXX",
+      "path": [
+        "XXX",
+        "XXX"
+      ]
+    },
+    {
+      "index": 7,
+      "title": "XXX / XXX",
+      "path": [
+        "XXX",
+        "XXX"
+      ]
+    },
+    {
+      "index": 8,
+      "title": "XXX / XXX",
+      "path": [
+        "XXX",
+        "XXX"
+      ]
+    },
+    {
+      "index": 9,
+      "title": "XXX / XXX",
+      "path": [
+        "XXX",
+        "XXX"
+      ]
+    },
+    {
+      "index": 10,
+      "title": "XXX / XXX",
+      "path": [
+        "XXX",
+        "XXX"
+      ]
+    },
+    {
+      "index": 11,
+      "title": "XXX / XXX",
+      "path": [
+        "XXX",
+        "XXX"
+      ]
+    },
+    {
+      "index": 12,
+      "title": "XXX / XXX",
+      "path": [
+        "XXX",
+        "XXX"
+      ]
+    },
+    {
+      "index": 13,
+      "title": "XXX / XXX",
+      "path": [
+        "XXX",
+        "XXX"
+      ]
+    },
+    {
+      "index": 14,
+      "title": "XXX / XXX",
+      "path": [
+        "XXX",
+        "XXX"
+      ]
+    },
+    {
+      "index": 15,
+      "title": "XXX / XXX",
+      "path": [
+        "XXX",
+        "XXX"
+      ]
+    },
+    {
+      "index": 16,
+      "title": "XXX / XXX",
+      "path": [
+        "XXX",
+        "XXX"
+      ]
+    },
+    {
+      "index": 17,
+      "title": "XXX / XXX",
+      "path": [
+        "XXX",
+        "XXX"
+      ]
+    },
+    {
+      "index": 18,
+      "title": "XXX / XXX",
+      "path": [
+        "XXX",
+        "XXX"
+      ]
+    },
+    {
+      "index": 19,
+      "title": "XXX / XXX",
+      "path": [
+        "XXX",
+        "XXX"
+      ]
+    }
+  ],
+  "totals": {
+    "records": 18,
+    "feedback_records": 30,
+    "changes": 0,
+    "missing": 8,
+    "additions": 0,
+    "additions_skipped": 0,
+    "unresolved": 0,
+    "duplicate_imports": 0
+  },
+  "exported": true,
+  "out": "D:\\Hermes-workspace\\Zcode-excel合并小工具\\回填结果_20261022_2316.xlsx",
+  "changes_path": "D:\\Hermes-workspace\\Zcode-excel合并小工具\\回填结果_20261022_2316.changes.json"
+}

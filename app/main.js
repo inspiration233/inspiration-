@@ -113,9 +113,7 @@ function createWindow() {
     height: 640,
     minWidth: 800,
     minHeight: 560,
-    // 'hidden' 而非 frame:false —— 视觉上同样无原生标题栏,
-    // 但缩放仍走系统原生路径, 消除 frame:false 重实现缩放时的黑闪(Windows DWM)
-    titleBarStyle: 'hidden',
+    // 原生窗口边框: 外层窗口(标题栏/最小化最大化关闭)跟随系统, 应用内保持自身风格
     backgroundColor: themeBg(),   // 初始底色跟随系统主题，避免缩放时闪异色
     show: false,
     webPreferences: {

@@ -7,15 +7,23 @@ the selected data interval are retained. Blank records are never cleaned up.
 
 Additional, deliberately explicit decisions:
 * retain_sheets: other sheets the recipient is allowed to receive;
+* retain_all_sheets: keep every original sheet in each output;
 * shared_label_ranges: merged text labels allowed to be clipped;
 * resolutions: {issue_id: "group_scope"} for references to a reduced range.
 * blank_group: "separate" (default) or explicitly "previous"; changes ownership
   only, and never fills the source's blank cells;
 * output_fields: absolute field coordinates to retain within the selected field
-  interval. Fields outside that interval are preserved.
-
-Preview issues contain choices with payload patches. Unsupported features and
-references to missing individual cells cannot be bypassed with allow_warnings.
+  interval. Fields outside that interval are preserved;
+* include_example_rows: rows whose 序号/编号 column starts with "例" are template
+  examples and are carried into every split output instead of being grouped;
+* filters also support gt/lt/ge/le (numeric comparison) and oneof
+  (comma separated values, any match).
+Images and charts are preserved: anchors shift with the record mapping and chart
+data references are rewritten; an object whose references become empty or whose
+anchor is deleted is dropped with a warning. WPS in-cell pictures (cellimages /
+DISPIMG) are re-injected as original package parts after each save. Pivot tables
+and rich-data objects still block. Every output passes the shared XLSX package
+validation before publication.
 Formulas are kept as formulas; Excel recalculates them on opening the output.
 """
 from __future__ import annotations
@@ -27,11 +35,12 @@ from datetime import date, datetime
 import hashlib
 import json
 import os
+import posixpath
 from pathlib import Path
 import re
 import tempfile
 import warnings
-from zipfile import ZipFile
+from zipfile import ZIP_DEFLATED, ZipFile
 from xml.etree import ElementTree as ET
 
 from openpyxl import load_workbook
@@ -46,6 +55,7 @@ from openpyxl.workbook.properties import CalcProperties
 
 from .merge import Cancelled
 from .compatibility import inspect_extensions
+from .package_check import validate_xlsx
 
 _CELL = re.compile(r"^(\$?)([A-Za-z]{1,3})(\$?)([1-9]\d*)$")
 _COL = re.compile(r"^(\$?)([A-Za-z]{1,3})$")
@@ -99,18 +109,11 @@ class _Issues:
             self.warnings.append(text)
 
     def scope(self, location, group, reference):
-        # Include the reference in the decision identity: a changed source formula
-        # must not inherit an earlier confirmation for a different population.
-        key = _stable("formula_scope", location, group, reference)
-        if self.payload.get("resolutions", {}).get(key) == "group_scope":
-            self.warn(f"{location}：已确认仅按输出中保留的记录计算。")
-            return True
-        self.items[key] = dict(
-            id=key, code="formula_scope", location=location, group=group, blocking=True,
-            message=f"{location} 引用范围或位置 {reference} 会随拆分改变，请确认计算口径。",
-            choices=[dict(value="group_scope", label="按本组保留记录计算",
-                          patch={"resolutions": {key: "group_scope"}})])
-        return False
+        # 拆分后引用只能覆盖本结果保留的记录——原口径的记录已不在此文件中,
+        # "按本组保留记录计算"是拆分语义下唯一合理的解释。自动执行并提示,
+        # 不再作为需要人工决策的问题。
+        self.warn(f"{location}：引用 {reference} 已按本结果保留的记录重新计算。")
+        return True
 
 
 class _Map:
@@ -165,6 +168,93 @@ class _Map:
                 old_anchor = f"{get_column_letter(start)}{rng.min_row}"
             result.append((str(out), old_anchor))
         return result
+
+
+def _shift_marker(marker, mapping):
+    """锚点标记(0-based)随记录映射平移; 所在记录被删返回 None。"""
+    if mapping.axis == "rows":
+        new = mapping.point(marker.row + 1)
+        if new is None:
+            return None
+        marker.row = new - 1
+    else:
+        new = mapping.point(marker.col + 1)
+        if new is None:
+            return None
+        marker.col = new - 1
+    return marker
+
+
+def _shift_anchor(anchor, mapping):
+    """from 标记被删 → False(对象丢弃); to 标记被删 → 夹到 from。"""
+    if getattr(anchor, "_from", None) is not None and _shift_marker(anchor._from, mapping) is None:
+        return False
+    to = getattr(anchor, "to", None)
+    if to is not None:
+        if mapping.axis == "rows":
+            new = mapping.point(to.row + 1)
+            to.row = (new - 1) if new is not None else anchor._from.row
+        else:
+            new = mapping.point(to.col + 1)
+            to.col = (new - 1) if new is not None else anchor._from.col
+    return True
+
+
+def _map_chart_refs(chart, owner_title, context):
+    """改写指向被拆分工作表的图表数据引用; 引用区间删空 → False(丢弃)。"""
+    mapping = context["mapping"]
+    refs = []
+    for series in chart.series or []:
+        for holder in (getattr(series, "val", None), getattr(series, "cat", None),
+                       getattr(series, "tx", None)):
+            if holder is None:
+                continue
+            for attr in ("numRef", "strRef"):
+                ref = getattr(holder, attr, None)
+                if ref is not None and ref.f:
+                    refs.append(ref)
+    title = getattr(getattr(chart, "title", None), "tx", None)
+    title_ref = getattr(title, "strRef", None) if title is not None else None
+    if title_ref is not None and title_ref.f:
+        refs.append(title_ref)
+    for ref in refs:
+        text = str(ref.f)
+        sheet_part, _, rng = text.rpartition("!")
+        if sheet_part:
+            if sheet_part.strip("'\"") != context["target"]:
+                continue                     # 引用其他页: 该页未被拆分, 原样保留
+        elif owner_title != context["target"]:
+            continue
+        try:
+            mapped, partial, empty = _map_reference(rng, mapping)
+        except ValueError:
+            continue                         # 不认识的引用格式: 保持原样
+        if empty or mapped is None:
+            return False
+        if partial:
+            context["issues"].warn(
+                f"{owner_title} 的图表引用 {rng} 拆分后覆盖的记录集合已变化。")
+        ref.f = f"{sheet_part}!{mapped}" if sheet_part else mapped
+    return True
+
+
+def _map_drawings(ws, mapping, context):
+    """拆分页上的图片/图表: 锚点平移+引用改写; 无法保留的丢弃并提示。"""
+    kept_charts = []
+    for chart in list(ws._charts):
+        ok = _shift_anchor(chart.anchor, mapping) and _map_chart_refs(chart, ws.title, context)
+        if ok:
+            kept_charts.append(chart)
+        else:
+            context["issues"].warn(f"{ws.title} 的一个图表（锚点或数据引用被删空）未随结果保留。")
+    ws._charts = kept_charts
+    kept_images = []
+    for image in list(ws._images):
+        if _shift_anchor(image.anchor, mapping):
+            kept_images.append(image)
+        else:
+            context["issues"].warn(f"{ws.title} 的一张图片（锚定在被删记录上）未随结果保留。")
+    ws._images = kept_images
 
 
 def _selection(payload, ws):
@@ -226,6 +316,20 @@ def _one_month(value):
     return year, month
 
 
+def _number(value):
+    """数值比较筛选的可比数字; 无法解析返回 None。"""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value.strip())
+        except ValueError:
+            return None
+    return None
+
+
 def _month_span(start, end=None):
     if end is None and isinstance(start, str):
         parts = _RANGE_SEP.split(start.strip())
@@ -281,8 +385,23 @@ def _group_records(ws, s, payload, issues):
     blank_mode = payload.get("blank_group", "separate")
     if blank_mode not in {"separate", "previous"}:
         raise ValueError("blank_group 必须为 separate 或 previous")
+    # 模板示例行: 序号/编号列以"例"开头的记录不参与分组, 每张结果都携带
+    example_rows, example_set = [], set()
+    if payload.get("include_example_rows"):
+        serial_field = next((c["index"] for c in columns
+                             if str(c["label"]).strip() in ("序号", "编号")), None)
+        if serial_field is not None:
+            for record in range(s["data_start"], s["data_end"] + 1):
+                v = _field(ws, s, record, serial_field)
+                if isinstance(v, str) and v.strip().startswith("例"):
+                    example_rows.append(record)
+            example_set = set(example_rows)
+            if example_rows:
+                issues.warn(f"示例行（“例”开头序号，共 {len(example_rows)} 行）将加入每张拆分结果。")
     previous, blank_records = {}, []
     for record in range(s["data_start"], s["data_end"] + 1):
+        if record in example_set:
+            continue
         vals = []
         record_blank = False
         for number, spec in enumerate(fields):
@@ -316,6 +435,15 @@ def _group_records(ws, s, payload, issues):
                     ok = str(value).strip() == str(target).strip() if value is not None else target is None
                 elif op == "contains":
                     ok = value is not None and str(target) in str(value)
+                elif op == "oneof":
+                    parts = [p.strip() for p in re.split(r"[，,、]", str(target)) if p.strip()]
+                    ok = value is not None and any(str(value).strip() == p for p in parts)
+                elif op in {"gt", "lt", "ge", "le"}:
+                    num, ref = _number(value), _number(target)
+                    if num is None or ref is None:
+                        raise ValueError(f"{op} 筛选要求字段值与填写值都是数字（当前值 {value!r}）")
+                    ok = {"gt": num > ref, "lt": num < ref,
+                          "ge": num >= ref, "le": num <= ref}[op]
                 elif op in {"month", "interval"}:
                     if value is None or value == "":
                         ok = False
@@ -369,6 +497,13 @@ def _group_records(ws, s, payload, issues):
                        dict(value="separate", label="空白单独成组", patch={"blank_group": "separate"})])
     elif blank_records:
         issues.warn("已按用户选择沿用上一非空分组值确定归属；原空白单元格保持空白。")
+    if example_rows:
+        example_sample = [[_json_value(_field(ws, s, r, i)) for i in sample_fields]
+                          for r in example_rows[:2]]
+        for group in groups.values():
+            group["records"] = sorted(set(group["records"]) | example_set)
+            group["count"] = len(group["records"])
+            group["sample"] = (example_sample + group["sample"])[:5]
     return list(groups.values()), selected
 
 
@@ -456,6 +591,9 @@ def _retained(wb, selected, payload, issues):
     explicit = payload.get("retain_sheets", [])
     if not isinstance(explicit, list) or any(x not in wb.sheetnames for x in explicit):
         raise ValueError("retain_sheets 必须是原文件中存在的工作表名称列表")
+    if payload.get("retain_all_sheets"):
+        issues.warn("已按要求保留原文件的全部工作表（未参与筛选）。")
+        return list(wb.sheetnames)
     retained, queue = {selected.title, *explicit}, [selected.title, *explicit]
     while queue:
         owner = queue.pop(0)
@@ -477,6 +615,10 @@ def _retained(wb, selected, payload, issues):
                                dict(value="retain", label=f"允许结果包含“{target}”",
                                     patch={"retain_sheets": sorted(set(explicit) | {target})})],
                            sheet=target)
+                pending = getattr(issues, "dependency_pending", None)
+                if pending is None:
+                    pending = issues.dependency_pending = set()
+                pending.add(target)
             else:
                 issues.add("external_reference", f"存在外部或无法识别的工作表引用：{target}", f"{owner}!{entries[0][2]}")
     dropped = [name for name in wb.sheetnames if name not in retained]
@@ -560,7 +702,8 @@ def _rewrite(formula, owner, target, mapping, wb, retained, issues, location, gr
                 out.append(value)
                 continue
             if sheet not in retained:
-                issues.add("missing_sheet", f"公式依赖未保留的工作表“{sheet}”。", location, group)
+                if sheet not in getattr(issues, "dependency_pending", set()):
+                    issues.add("missing_sheet", f"公式依赖未保留的工作表“{sheet}”。", location, group)
             elif sheet == target:
                 try:
                     mapped, partial, empty = _map_reference(ref, mapping)
@@ -810,11 +953,39 @@ def _metadata(ws, mapping, context):
             context["issues"].add("table_formula", "Excel 表格含结构化计算公式，暂不能安全调整。", f"{ws.title}!{table.ref}", context["group"])
 
 
+def _cached_value_reader(path):
+    """惰性打开 data_only 版: 公式引用被删空时用"原计算值"回退。
+
+    真实 Excel/WPS 保存的文件带缓存值; openpyxl 生成的文件没有(返回 None,
+    回退不生效, 保持原有阻断)。
+    """
+    store = {}
+
+    def read(sheet, coord):
+        if "wb" not in store:
+            store["wb"] = load_workbook(path, data_only=True)
+        try:
+            return store["wb"][sheet][coord].value
+        except Exception:
+            return None
+
+    def close():
+        book = store.pop("wb", None)
+        if book is not None:
+            try:
+                book.close()
+            except Exception:
+                pass
+
+    return read, close
+
+
 def _transform(wb, target, s, group, retained, payload, issues, metadata_labels=(), record_filter=None):
     ws = wb[target]
     mapping = _Map(s, group["records"])
     context = dict(owner=target, target=target, mapping=mapping, wb=wb, retained=retained,
                    issues=issues, group=group["id"])
+    cached_read, cached_close = _cached_value_reader(payload["path"])
     shared = {str(CellRange(r)) for r in payload.get("shared_label_ranges", [])}
     merges = []
     for rng in list(ws.merged_cells.ranges):
@@ -826,14 +997,13 @@ def _transform(wb, target, s, group, retained, payload, issues, metadata_labels=
         if mapping.partial(lo, hi):
             is_text = isinstance(cell.value, str) and not cell.value.startswith("=")
             header_label = str(rng) in metadata_labels and cell.data_type != "f"
-            if not header_label and (str(rng) not in shared or not is_text):
-                choices = None
-                if is_text:
-                    choices = lambda k, ref=str(rng): [
-                        dict(value="shared_label", label="确认这只是各记录共用的分组标签",
-                             patch={"shared_label_ranges": sorted(shared | {ref})})]
-                issues.add("merged_record", f"合并区 {rng} 跨越保留与移除记录，请确认是否仅为共享标签。",
-                           f"{target}!{rng}", group["id"], choices=choices, range=str(rng))
+            if not header_label and is_text:
+                # 文本合并区跨记录 = 各记录共用的标签(拆分语义下唯一合理解释),
+                # 自动按共享标签保留在各结果中
+                issues.warn(f"合并区 {rng} 跨越保留与移除记录，已按共用标签保留在各结果中。")
+            elif not header_label:
+                issues.add("merged_record", f"合并区 {rng} 跨越保留与移除记录且内容不是文本标签，请确认这些数据属于哪条记录。",
+                           f"{target}!{rng}", group["id"], range=str(rng))
         merges.append((mapped[0][0], copy(cell)))
     # Rewrite before replacing cells, so all formulas resolve the original names.
     for other in retained:
@@ -847,14 +1017,52 @@ def _transform(wb, target, s, group, retained, payload, issues, metadata_labels=
                 pos = cell.row if record_axis["axis"] == "rows" else cell.column
                 if record_axis["data_start"] <= pos <= record_axis["data_end"] and pos not in kept_records:
                     continue
-            cell.value = _rewrite(cell.value, **dict(context, owner=other,
-                                  location=f"{other}!{cell.coordinate}"))
+            location = f"{other}!{cell.coordinate}"
+            before = set(issues.items)
+            new_value = _rewrite(cell.value, **dict(context, owner=other, location=location))
+            fatal = [k for k in issues.items if k not in before and issues.items[k].get("code")
+                     in {"missing_reference", "unsupported_reference"}]
+            if fatal:
+                cached = cached_read(other, cell.coordinate)
+                if cached not in (None, ""):
+                    for k in fatal:
+                        item = issues.items[k]
+                        item.update(blocking=False, resolved=True)
+                        item["message"] += " 已自动转为原计算值。"
+                    issues.warn(f"{location} 的公式引用不在此结果中，已转为原计算值（拆分前显示的值）。")
+                    new_value = cached
+            cell.value = new_value
     _transform_rules(ws, mapping, context)
     _metadata(ws, mapping, context)
     _map_dimensions(ws, mapping)
+    _map_drawings(ws, mapping, context)
+    if mapping.axis == "rows":
+        # 序号列连续重排(每组从1): 数值序号与公式序号(=ROW()-N 在行压缩后会
+        # 漂移甚至为负)一律重排为连续数字; 文本序号(如"例1")保留原值不计数
+        serial_field = None
+        for i in range(s["field_start"], s["field_end"] + 1):
+            if str(_value(ws, s["header_start"], i) or "").strip() in ("序号", "编号"):
+                serial_field = i
+                break
+        if serial_field is not None:
+            counter, renumbered = 0, 0
+            for record in sorted(group["records"]):
+                cell = ws._cells.get((record, serial_field))
+                v = cell.value if cell is not None else None
+                if v is None or v == "":
+                    continue
+                if isinstance(v, (int, float)) or (isinstance(v, str) and v.strip().isdigit())                         or (isinstance(v, str) and v.strip().startswith("=")):
+                    counter += 1
+                    if cell is not None and v != counter:
+                        cell.value = counter
+                    renumbered += 1
+            if counter:
+                issues.warn("序号列已按本组记录从 1 连续重排（文本序号保留原值）。")
     for owner in retained:
         # Rules on retained pages can also refer back to the filtered sheet.
         if owner != target:
+            for chart in wb[owner]._charts or []:
+                _map_chart_refs(chart, owner, context)
             for dv in wb[owner].data_validations.dataValidation:
                 for attr in ("formula1", "formula2"):
                     setattr(dv, attr, _rewrite(getattr(dv, attr), **dict(
@@ -905,6 +1113,7 @@ def _transform(wb, target, s, group, retained, payload, issues, metadata_labels=
             del wb[name]
     if not any(w.sheet_state == "visible" for w in wb):
         issues.add("hidden_output", "输出中没有可见工作表，请选择可见数据页。", target, group["id"])
+    cached_close()
     wb.calculation = CalcProperties(fullCalcOnLoad=True, forceFullCalc=True)
     ws._current_row = max((row for row, _ in ws._cells), default=0)
     return wb
@@ -954,14 +1163,13 @@ def _object_issues(wb, retained, issues, path):
     for name in retained:
         ws = wb[name]
         objects = []
-        if ws._charts:
-            objects.append("图表")
-        if ws._images:
-            objects.append("图片")
         if ws._pivots:
             objects.append("数据透视表")
         if objects:
             issues.add("unsupported_object", f"“{name}”含{'、'.join(objects)}，当前不能保证拆分后引用与位置不变。", name)
+        # 图片/图表改为保留: 锚点随记录平移、图表引用同步改写; 删空的丢弃并提示
+        if ws._charts or ws._images:
+            issues.warn(f"“{name}”的图片/图表将随结果保留：位置随拆分平移，图表数据引用同步改写；引用被删空的图表会丢弃。")
         if any(getattr(c, "comment", None) for c in ws._cells.values()):
             issues.warn(f"“{name}”的普通批注文字与作者保留；批注框外观由 Excel 重新生成。")
     # openpyxl warns about, or silently omits, some XML extensions. Detect them
@@ -1020,6 +1228,100 @@ def _load(path, issues):
     return wb
 
 
+def _package_extras(path):
+    """WPS 单元格内嵌图片(xl/cellimages*)部件: openpyxl 不建模, 保存会丢失。
+
+    提取原文件中的 cellimages 部件、其关系文件与引用的媒体文件, 以及
+    内容清单/工作簿关系中对应的片段, 供导出后原样回注。__ 开头的键为
+    清单片段而非包部件。
+    """
+    extras = {}
+    with ZipFile(path) as archive:
+        names = set(archive.namelist())
+        core = [n for n in sorted(names) if n.startswith("xl/cellimages")]
+        if not core:
+            return extras
+        dependents = set()
+        for part in core:
+            extras[part] = archive.read(part)
+            stem = part.rsplit("/", 1)
+            rels = stem[0] + "/_rels/" + stem[1] + ".rels"
+            if rels in names:
+                extras[rels] = archive.read(rels)
+                owner_dir = posixpath.dirname(part)
+                for rel in ET.fromstring(extras[rels]):
+                    if rel.get("TargetMode") == "External":
+                        continue
+                    target = rel.get("Target", "")
+                    resolved = posixpath.normpath(
+                        target.lstrip("/") if target.startswith("/")
+                        else posixpath.join(owner_dir, target))
+                    if resolved in names:
+                        dependents.add(resolved)
+        for item in sorted(dependents):
+            if item not in extras:
+                extras[item] = archive.read(item)
+        extras["__content_types__"] = archive.read("[Content_Types].xml")
+        extras["__workbook_rels__"] = archive.read("xl/_rels/workbook.xml.rels")
+    return extras
+
+
+def _merge_package_xml(destination, source, match):
+    """把 source 清单中与注入部件相关的节点并入 destination(同一根标签)。"""
+    dest_root = ET.fromstring(destination)
+    src_root = ET.fromstring(source)
+    existing = {match(node) for node in dest_root}
+    added = False
+    for node in src_root:
+        key = match(node)
+        if key and key not in existing:
+            dest_root.append(node)
+            existing.add(key)
+            added = True
+    if not added:
+        return destination
+    ET.register_namespace("", "http://schemas.openxmlformats.org/package/2006/content-types"
+                          if dest_root.tag.endswith("Types") else
+                          "http://schemas.openxmlformats.org/package/2006/relationships")
+    return ET.tostring(dest_root, encoding="UTF-8", xml_declaration=True)
+
+
+def _inject_extras(out, extras):
+    """保存后的输出包回注 cellimages 部件并修补清单/工作簿关系。"""
+    if not extras:
+        return
+    out = Path(out)
+    parts = {k: v for k, v in extras.items() if not k.startswith("__")}
+    content = extras.get("__content_types__")
+    workbook_rels = extras.get("__workbook_rels__")
+    part_names = {"/" + name for name in parts}
+    media_exts = {name.rsplit(".", 1)[-1].lower() for name in parts if "/media/" in name}
+    staged = out.with_name(out.name + ".injecting")
+    with ZipFile(out) as zin, ZipFile(staged, "w", ZIP_DEFLATED) as zout:
+        existing = set(zin.namelist())
+        for name in zin.namelist():
+            data = zin.read(name)
+            if name == "[Content_Types].xml" and content is not None:
+                data = _merge_package_xml(
+                    data, content,
+                    lambda node: (node.get("PartName"), "override")
+                    if node.tag.endswith("Override") and node.get("PartName") in part_names
+                    else (node.get("Extension"), "default")
+                    if node.tag.endswith("Default") and node.get("Extension", "").lower() in media_exts
+                    else None)
+            elif name == "xl/_rels/workbook.xml.rels" and workbook_rels is not None:
+                data = _merge_package_xml(
+                    data, workbook_rels,
+                    lambda node: node.get("Target")
+                    if node.tag.endswith("Relationship") and "cellimages" in node.get("Target", "")
+                    else None)
+            zout.writestr(name, data)
+        for name, data in parts.items():
+            if name not in existing:
+                zout.writestr(name, data)
+    os.replace(staged, out)
+
+
 def _prepare(payload, cancel=None):
     path = Path(payload["path"]).expanduser().resolve()
     if path.suffix.lower() != ".xlsx":
@@ -1039,6 +1341,13 @@ def _prepare(payload, cancel=None):
         groups, records = _group_records(ws, selection, payload, issues)
         retained = _retained(wb, ws, payload, issues)
         _object_issues(wb, retained, issues, path)
+        dispimg = any(isinstance(c.value, str) and "DISPIMG(" in c.value
+                      for name in retained for c in wb[name]._cells.values())
+        if dispimg:
+            if _package_extras(path):
+                issues.warn("检测到单元格内嵌图片（WPS DISPIMG）：图片部件将原样保留在每张结果中。")
+            else:
+                issues.warn("检测到 DISPIMG 图片函数但未找到对应的图片部件；结果中的函数可能无法显示图片。")
         outside = []
         for cell in ws._cells.values():
             record, field = (cell.row, cell.column) if selection["axis"] == "rows" else (cell.column, cell.row)
@@ -1046,16 +1355,10 @@ def _prepare(payload, cancel=None):
                     selection["field_start"] <= field <= selection["field_end"]):
                 outside.append(cell.coordinate)
         if outside:
-            location = f"{sheet}!{' '.join(sorted(outside))}"
-            key = _stable("outside_fields", location, "")
-            if payload.get("resolutions", {}).get(key) != "whole_axis":
-                issues.add("outside_fields",
-                           "所选字段之外还有有效单元格；按整行/列拆分会一并删留这些内容，请确认它们属于同一记录。",
-                           location, cells=outside[:20], choices=lambda k: [
-                               dict(value="whole_axis", label="确认这些内容随整行/列一起处理",
-                                    patch={"resolutions": {k: "whole_axis"}})])
-            else:
-                issues.warn("已确认所选字段之外的内容随整行/列一起处理：" + "、".join(outside[:20]))
+            # 字段范围外的内容与所选字段同属一条记录, 随整行/列保留是唯一
+            # 不丢数据的处理方式——自动执行并提示
+            issues.warn("所选字段之外的有效内容（" + "、".join(outside[:20])
+                        + ("等" if len(outside) > 20 else "") + "）将随整行/列一起保留在各结果中。")
         issues.warn("仅删去所选数据区内未入组的整行/列；所选工作表的前置区及区外内容保留。")
         if any(c.data_type == "f" for name in retained for c in wb[name]._cells.values()):
             issues.warn("保留公式文本；结果由 Excel 打开后重新计算，预览不把缓存值作为计算结果。")
@@ -1107,6 +1410,7 @@ def split_export(payload, cancel=None, progress=None):
     path, sheet, selection, retained, preview = _prepare(payload, cancel)
     if not preview["can_export"]:
         raise SplitBlocked(preview)
+    extras = _package_extras(path)
     out_dir = Path(payload.get("out_dir") or path.parent / "拆分结果").expanduser().resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
     created, temporary = [], []
@@ -1136,12 +1440,18 @@ def split_export(payload, cancel=None, progress=None):
             wb = _load(path, issues)
             try:
                 _render_group(wb, sheet, selection, group, retained, payload, issues)
-                if issues.items:
+                blocking = [x for x in issues.items.values() if x.get("blocking", True)]
+                if blocking:
                     changed = dict(preview, issues=list(issues.items.values()), can_export=False)
                     raise SplitBlocked(changed)
                 wb.save(temp)
             finally:
                 wb.close()
+            _inject_extras(temp, dict(extras))
+            try:
+                validate_xlsx(temp)
+            except ValueError as error:
+                raise ValueError(f"生成文件结构检查未通过：{error}")
             if cancel and cancel():
                 raise Cancelled()
             os.replace(temp, candidate)  # only replaces the placeholder owned above

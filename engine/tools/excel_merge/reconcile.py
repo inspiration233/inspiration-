@@ -25,6 +25,7 @@ from openpyxl.utils import get_column_letter
 from openpyxl.utils.exceptions import InvalidFileException
 from openpyxl.worksheet.cell_range import CellRange, MultiCellRange
 from openpyxl.worksheet.print_settings import PrintArea
+from openpyxl.styles import PatternFill
 
 from .merge import Cancelled
 from .compatibility import inspect_extensions
@@ -145,6 +146,7 @@ class Source:
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always", UserWarning)
             self.book = load_workbook(self.path, data_only=False, rich_text=True)
+        self._cached_book = None
         books.append(self.book)
         for warning in caught:
             message = str(warning.message)
@@ -186,6 +188,31 @@ class Source:
         self.token = _digest([content_hash, name, vars(self.selection), self.field_map])
         self.label = f"{self.path.name} / {name}"
 
+    def close(self):
+        if self._cached_book:
+            try:
+                self._cached_book.close()
+            except Exception:
+                pass
+        try:
+            self.book.close()
+        except Exception:
+            pass
+
+    def cached_value(self, record, field):
+        """公式格的计算值(真实 Excel/WPS 保存的文件才有缓存); 供公式主键使用。"""
+        if self._cached_book is None:
+            try:
+                self._cached_book = load_workbook(self.path, data_only=True)
+            except Exception:
+                self._cached_book = False
+        if not self._cached_book:
+            return None
+        try:
+            return self.selection.cell(self._cached_book[self.ws.title], record, field).value
+        except Exception:
+            return None
+
     def records(self):
         s = self.selection
         return [(r, {f: self.logical_value(r, f) for f in s.fields})
@@ -218,6 +245,7 @@ class Plan:
             self.resolutions = {}
         self.feedback_count = self.duplicate_imports = 0
         self.record_count = 0
+        self.additions_skipped = 0
 
     def issue(self, kind, identity, message, choices=(), **extra):
         iid = kind + ":" + _digest(identity)
@@ -245,8 +273,8 @@ class Plan:
             "can_export": not unresolved, "fields": fields,
             "totals": {"records": self.record_count, "feedback_records": self.feedback_count,
                        "changes": len(self.changes), "missing": len(self.missing),
-                       "additions": len(self.additions), "unresolved": unresolved,
-                       "duplicate_imports": self.duplicate_imports},
+                       "additions": len(self.additions), "additions_skipped": self.additions_skipped,
+                       "unresolved": unresolved, "duplicate_imports": self.duplicate_imports},
         })
 
 
@@ -264,6 +292,7 @@ def _fields(plan, name, required=False):
 def _mapping(plan, source, required):
     target = plan.current
     result = {}
+    by_position = []
     target_counts = defaultdict(int)
     source_by_title = defaultdict(list)
     for title in target.headers.values():
@@ -287,42 +316,125 @@ def _mapping(plan, source, required):
             if title and target_counts[title] == 1 and len(matches) == 1:
                 result[field] = matches[0]
                 continue
+            if title and field in matches:
+                # 多列同名(如多列都叫 XXX)时按列位置对应: 只在同名候选中选择
+                # 位置一致的那一列(同模板文件列布局一致), 歧义无第二种合理解释
+                result[field] = field
+                by_position.append(field)
+                continue
         plan.issue("field_mapping", [source.token, field],
                    f"{source.label} 无法唯一对应字段 {field}（{' / '.join(target.headers[field])}）；"
-                   "请通过 field_map 指定目标字段与反馈字段的索引",
+                   "请在界面的字段对应表中为它选择来源列",
                    source=source.descriptor(), target_field=field,
                    available_fields=[{"index": f, "path": list(t)} for f, t in source.headers.items()])
+    if by_position:
+        plan.warnings.append(
+            f"{source.label} 有 {len(by_position)} 个同名字段（如 {' / '.join(target.headers[by_position[0]])}）"
+            "无法按标题区分，已按相同列位置对应")
     if len(set(result.values())) != len(result):
         plan.issue("field_mapping", [source.token, "duplicate"],
                    f"{source.label} 将多个目标字段映射到了同一反馈字段")
     return result
 
 
-def _indexed(plan, source, key_fields, mapping, role):
+def _indexed(plan, source, key_fields, mapping, role, known_keys=None):
     groups = defaultdict(list)
+    merged_groups = []
     if any(f not in mapping for f in key_fields):
         return {}
+    empty_count = 0
+    formula_key_count = 0
     for position, values in source.records():
         key_values = [values[mapping[f]] for f in key_fields]
         if any(_blank(v) for v in key_values):
-            plan.issue("empty_key", [role, source.token, position],
-                       f"{source.label} 的第 {position} 条记录主键为空", source=source.descriptor(),
-                       position=position)
+            # 主键为空无法对应任何记录: 跳过该条(等价保留现状), 汇总提示
+            empty_count += 1
             continue
         if any(source.selection.cell(source.ws, position, mapping[f]).data_type == "f" for f in key_fields):
-            plan.issue("formula_key", [role, source.token, position],
-                       f"{source.label} 的主键含公式，请选择稳定的记录标识字段")
-            continue
+            cached = [source.cached_value(position, mapping[f]) for f in key_fields]
+            if all(v not in (None, "") for v in cached):
+                # 公式主键(如 =A2&B2 拼接编号)按计算值匹配
+                formula_key_count += 1
+                key_values = cached
+            else:
+                plan.issue("formula_key", [role, source.token, position],
+                           f"{source.label} 的主键含公式且文件中没有可用的计算值，请选择稳定的记录标识字段")
+                continue
         groups[_key(key_values)].append((position, values, key_values))
     result = {}
     for key, records in groups.items():
-        if len(records) != 1:
-            plan.issue("duplicate_key", [role, source.token, key],
-                       f"{source.label} 存在重复主键，不能自动选择第一条或最后一条",
-                       key=records[0][2], positions=[v[0] for v in records],
-                       source=source.descriptor())
-        else:
+        if len(records) == 1:
             result[key] = records[0]
+            continue
+        mapped_cols = set(mapping.values())
+        relevant = lambda rec: {c: rec[1].get(c) for c in mapped_cols}
+        if all(relevant(rec) == relevant(records[0]) for rec in records[1:]):
+            # 主键相同且本次操作关心的字段(主键+回填/比较字段)内容一致:
+            # 差异只在无关列, 取哪条都一样 → 自动合并
+            plan.warnings.append(
+                f"{source.label} 有 {len(records)} 条主键相同的记录，本次回填关注的字段内容一致，已合并处理。")
+            result[key] = records[0]
+        elif role == "feedback":
+            # 同一反馈文件内主键重复且关注字段不同: 视同多份反馈冲突
+            if known_keys is not None and key in known_keys:
+                plan.warnings.append(
+                    f"{source.label} 对记录 {' / '.join(str(v) for v in records[0][2])} 给出了 "
+                    f"{len(records)} 条不同反馈（第 {'、'.join(str(v[0]) for v in records)} 条），已保留当前内容。")
+            else:
+                # 当前表按此主键没有这条记录: 说"保留当前"会误导, 实际是整组忽略
+                plan.warnings.append(
+                    f"{source.label} 有 {len(records)} 条主键相同的反馈（{' / '.join(str(v) for v in records[0][2])}，"
+                    f"第 {'、'.join(str(v[0]) for v in records)} 条）内容互相矛盾，"
+                    "无法确定采用哪条，已全部忽略。")
+        else:
+            merged_key = any(
+                isinstance(source.selection.cell(source.ws, position, mapping[f]), MergedCell)
+                for position, _, _ in records for f in key_fields)
+            if merged_key:
+                # 纵向合并组: 多行共用合并锚点值, 不是表做错了, 是主键选了组名列;
+                # 同一原因聚合为一条提示
+                merged_groups.append((records[0][2], len(records)))
+            else:
+                plan.issue("duplicate_key", [role, source.token, key],
+                           f"{source.label} 存在重复主键且内容不同，无法确定哪条是这条记录；"
+                           "自动跳过会导致反馈被误认为新记录追加，请先修正原表的主键",
+                           key=records[0][2], positions=[v[0] for v in records],
+                           source=source.descriptor())
+    if merged_groups:
+        values = "、".join(" / ".join(str(v) for v in key_values) for key_values, _ in merged_groups[:4])
+        if len(merged_groups) > 4:
+            values += "…"
+        merged_rows = sum(rows for _, rows in merged_groups)
+        # 建议改用的主键列: 数据全非空且每行唯一, 优先标题含序号/编号
+        columns = {f: [] for f in source.selection.fields}
+        for recs in groups.values():
+            for _, values_row, _ in recs:
+                for f in columns:
+                    columns[f].append(values_row.get(f))
+        unique_fields = [f for f, vals in columns.items()
+                         if vals and not any(_blank(v) for v in vals)
+                         and len({_key([v]) for v in vals}) == len(vals)]
+        preferred = next((f for f in unique_fields
+                          if any(t and ("序号" in t or "编号" in t)
+                                 for t in source.headers.get(f, ()))), None)
+        suggested = preferred or (unique_fields[0] if unique_fields else None)
+        issue_extra = {"keys": [k for k, _ in merged_groups],
+                       "source": source.descriptor()}
+        if suggested is not None:
+            issue_extra["suggested_key"] = {"field": suggested,
+                                            "title": " / ".join(source.headers.get(suggested, ()))}
+        plan.issue("duplicate_key", [role, source.token, "merged"],
+                   f"{source.label} 的主键列含合并单元格：{len(merged_groups)} 组"
+                   f"（{values}）每组多行共用一个合并值、各行内容又不同；"
+                   f"受影响的 {merged_rows} 行数据当前都无法按此主键对应，"
+                   "请改选每行唯一的列（如序号/编号）作主键",
+                   **issue_extra)
+    if empty_count:
+        plan.warnings.append(
+            f"{source.label} 有 {empty_count} 条主键为空的记录已跳过（无法与任何记录对应，保留现状）。")
+    if formula_key_count:
+        plan.warnings.append(
+            f"{source.label} 有 {formula_key_count} 条主键为公式，已按其计算值匹配。")
     return result
 
 
@@ -385,6 +497,71 @@ def _append_reason(source):
     return None
 
 
+def _example_marked(value):
+    return isinstance(value, str) and value.strip().startswith("例")
+
+
+def _group_records(plan, source, key_field, group_field, mapping, role):
+    """分组身份索引。底稿序号通常全局连续、拆分产物序号按组内从 1 开始,
+    数值不一致是分发-回填流程的常态, 因此不按序号数值匹配:
+    "例"开头序号按值全局对应(模板示例); 其余记录按(组值, 组内第几条真实记录)对应。"""
+    group_counter = defaultdict(int)
+    result = {}
+    duplicates = defaultdict(list)
+    empty_count = 0
+    for position, values in source.records():
+        key_value = values[mapping[key_field]]
+        group_value = values[mapping[group_field]]
+        if _blank(key_value) or _blank(group_value):
+            empty_count += 1
+            continue
+        if _example_marked(key_value):
+            identity = ("ex",) + _key([key_value])
+            display = [key_value]
+        else:
+            group_key = _key([group_value])
+            group_counter[group_key] += 1
+            identity = ("grp", group_key, group_counter[group_key])
+            display = [group_value, group_counter[group_key]]
+        if identity in result:
+            duplicates[identity].append((position, values, display))
+        else:
+            result[identity] = (position, values, display)
+    for identity, extra in duplicates.items():
+        all_records = [result[identity]] + extra
+        mapped_cols = set(mapping.values())
+        relevant = lambda rec: {c: rec[1].get(c) for c in mapped_cols}
+        if all(relevant(rec) == relevant(all_records[0]) for rec in all_records[1:]):
+            plan.warnings.append(
+                f"{source.label} 有 {len(all_records)} 条身份相同的记录"
+                f"（{' / '.join(str(v) for v in all_records[0][2])}），本次回填关注的字段内容一致，已合并处理。")
+        else:
+            plan.issue("duplicate_key", [role, source.token, list(identity)],
+                       f"{source.label} 存在身份重复且内容不同的记录"
+                       f"（{' / '.join(str(v) for v in all_records[0][2])}，"
+                       f"第 {'、'.join(str(r[0]) for r in all_records)} 条）；请先修正或更换分组/序号列",
+                       key=all_records[0][2], positions=[r[0] for r in all_records],
+                       source=source.descriptor())
+    if empty_count:
+        plan.warnings.append(
+            f"{source.label} 有 {empty_count} 条记录的序号或分组为空，已跳过（无法对应，保留现状）。")
+    return result
+
+
+def _key_column_merged(source, key_field):
+    """主键列在数据区是否含沿记录方向的合并(合并块=一条记录的子行结构)。"""
+    s = source.selection
+    for merged in source.ws.merged_cells.ranges:
+        if s.axis == "rows":
+            if (merged.min_row < merged.max_row and merged.min_col <= key_field <= merged.max_col
+                    and merged.max_row >= s.data_start and merged.min_row <= s.data_end):
+                return True
+        elif (merged.min_col < merged.max_col and merged.min_row <= key_field <= merged.max_row
+                and merged.max_col >= s.data_start and merged.min_col <= s.data_end):
+            return True
+    return False
+
+
 def _analyse(payload, cancel=None, progress=None):
     plan = Plan(payload)
     try:
@@ -399,15 +576,51 @@ def _analyse(payload, cancel=None, progress=None):
             plan.issue("field_selection", "keys_updated", "主键字段不能同时作为回填字段")
         if not keys or not updates:
             return plan
-        records = _indexed(plan, current, keys, {f: f for f in current.selection.fields}, "current")
+        group_field = payload.get("group_field")
+        group_mode = False
+        auto_block = False
+        if group_field is not None:
+            if not (isinstance(group_field, int) and not isinstance(group_field, bool)
+                    and group_field in current.selection.fields):
+                plan.issue("field_selection", "group_field", "分组列必须是底表当前字段范围内的一个列")
+                return plan
+            if len(keys) != 1:
+                plan.issue("field_selection", "group_key", "分组匹配模式下，主键只能选择一个序号列")
+                return plan
+            if group_field in keys or group_field in updates:
+                plan.issue("field_selection", "group_conflict", "分组列不能同时作为主键或回填字段")
+                return plan
+            group_mode = True
+            plan.warnings.append(
+                "分组匹配：反馈中每组的第 k 条记录对应底稿同名组的第 k 条（序号数值不要求一致）；"
+                "若反馈在组内中间插行或删行，结果需人工核对。")
+        elif len(keys) == 1 and _key_column_merged(current, keys[0]):
+            # 名称类主键常纵向合并: 合并块本身是一条记录, 块内行是子行。
+            # 按块匹配是使用该列作主键的唯一合理读法, 自动启用并留痕。
+            auto_block = True
+            group_mode = True
+            group_field = keys[0]
+            plan.warnings.append(
+                f"主键列{' / '.join(current.headers[keys[0]])}含合并单元格：已按“每个合并块 = 一条记录”匹配"
+                "（块内第 k 行对应反馈同名块的第 k 行）。若该列只是分组标签，"
+                "请改用“分组（单位）”选这一列，并另选每行唯一的序号列作主键。")
+        if group_mode:
+            records = _group_records(plan, current, keys[0], group_field,
+                                     {f: f for f in current.selection.fields}, "current")
+        else:
+            records = _indexed(plan, current, keys, {f: f for f in current.selection.fields}, "current")
         plan.record_count = len(records)
         baseline = current
         base_map = {f: f for f in current.selection.fields}
         base_records = records
         if payload.get("baseline"):
             baseline = Source(payload["baseline"], payload.get("selection"), plan.books, plan.warnings)
-            base_map = _mapping(plan, baseline, sorted(set(keys + updates + compares)))
-            base_records = _indexed(plan, baseline, keys, base_map, "baseline")
+            if group_mode:
+                base_map = _mapping(plan, baseline, sorted(set(keys + updates + compares + [group_field])))
+                base_records = _group_records(plan, baseline, keys[0], group_field, base_map, "baseline")
+            else:
+                base_map = _mapping(plan, baseline, sorted(set(keys + updates + compares)))
+                base_records = _indexed(plan, baseline, keys, base_map, "baseline")
         items = payload.get("feedback", [])
         if not isinstance(items, list) or not items:
             plan.issue("feedback_required", "feedback", "请至少选择一个反馈工作簿")
@@ -421,9 +634,22 @@ def _analyse(payload, cancel=None, progress=None):
                 plan.duplicate_imports += 1
                 continue
             seen_imports.add(feedback.token)
-            mapping = _mapping(plan, feedback, sorted(set(keys + updates)))
-            found = _indexed(plan, feedback, keys, mapping, "feedback")
-            if len(mapping) != len(set(keys + updates)):
+            required = sorted(set(keys + updates + ([group_field] if group_mode else [])))
+            mapping = _mapping(plan, feedback, required)
+            full_map = None
+            if group_mode:
+                found = _group_records(plan, feedback, keys[0], group_field, mapping, "feedback")
+                base_groups = {k[1] for k in records if isinstance(k, tuple) and k[0] == "grp"}
+                labels = {}
+                for identity, (_, _, display) in found.items():
+                    if isinstance(identity, tuple) and identity[0] == "grp" and identity[1] not in base_groups:
+                        labels.setdefault(identity[1], display[0])
+                for _, label in sorted(labels.items(), key=lambda pair: str(pair[1])):
+                    plan.warnings.append(
+                        f"{feedback.label} 含底表中没有的分组：{label}，该组记录将作为新记录处理。")
+            else:
+                found = _indexed(plan, feedback, keys, mapping, "feedback", known_keys=set(records))
+            if len(mapping) != len(required):
                 continue
             for key, (position, values, key_values) in found.items():
                 plan.feedback_count += 1
@@ -431,7 +657,9 @@ def _analyse(payload, cancel=None, progress=None):
                 if key not in records:
                     # Confirming a new task appends the whole task, including its
                     # identity/context fields, not just the selected update fields.
-                    record_map = _mapping(plan, feedback, list(current.selection.fields))
+                    if full_map is None:
+                        full_map = _mapping(plan, feedback, list(current.selection.fields))
+                    record_map = full_map
                     if len(record_map) != len(current.selection.fields):
                         continue
                 proposals[key].append((feedback, position, values, key_values, record_map))
@@ -443,6 +671,9 @@ def _analyse(payload, cancel=None, progress=None):
         final = {key: (pos, dict(values), key_values, current.descriptor())
                  for key, (pos, values, key_values) in records.items()}
         appended = current.selection.data_end
+        append_reason = None
+        append_checked = False
+        merged_skips = []
         for key, candidates in proposals.items():
             _cancelled(cancel)
             exists = key in records
@@ -463,23 +694,30 @@ def _analyse(payload, cancel=None, progress=None):
                 unique.setdefault(_digest(values), (source, values, key_values))
             chosen = next(iter(unique.values()))
             if len(unique) > 1:
-                choices = [("keep", "保留当前内容" if exists else "跳过此新增记录")]
-                choices.extend(("source:" + src.token, f"采用 {src.label}") for src, _, _ in unique.values())
-                answer = plan.issue("conflict", key, "同一记录收到不同反馈，请选择采用的反馈或保留当前内容",
-                                    choices, key=chosen[2],
-                                    candidates=[{"source": src.descriptor(), "values": vals}
-                                                for src, vals, _ in unique.values()])
-                if answer is None or answer == "keep":
+                # 多份反馈冲突: 默认保留当前内容, 冲突明细进变更清单与提示, 不再阻断
+                if exists:
+                    current_values = {f: records[key][1].get(f) for f in updates}
+                    plan.changes.append({
+                        "id": "conflict:" + _digest(key), "key": chosen[2], "field": None,
+                        "field_title": "多份反馈冲突（已保留当前内容）",
+                        "before": current_values, "after": current_values, "kind": "conflict",
+                        "source": chosen[0].descriptor(), "position": records[key][0], "marked": False,
+                        "candidates": [{"source": src.descriptor(), "values": vals}
+                                       for src, vals, _ in unique.values()]})
+                    plan.warnings.append(
+                        f"记录 {' / '.join(str(v) for v in chosen[2])} 收到 {len(unique)} 份不同反馈，已保留当前内容（详见变更清单）。")
                     continue
-                chosen = next(value for value in unique.values() if "source:" + value[0].token == answer)
+                plan.warnings.append(
+                    f"新记录 {' / '.join(str(v) for v in chosen[2])} 收到 {len(unique)} 份不同反馈，已按第一份处理。")
             source, values, key_values = chosen
             if not exists:
-                reason = _append_reason(current)
-                choices = [("append", "追加为新记录"), ("skip", "跳过此新增记录")] if not reason else [
-                    ("skip", "跳过此新增记录")]
-                answer = plan.issue("addition", key, "发现当前表中没有的记录" + (f"；{reason}" if reason else ""),
-                                    choices, key=key_values, source=source.descriptor(), append_blocked=reason)
-                if answer != "append":
+                if not append_checked:
+                    append_checked = True
+                    append_reason = _append_reason(current)
+                if append_reason:
+                    # 追加不安全(数据区后有页脚/表对象/合并模板等): 跳过是唯一安全
+                    # 动作, 自动执行并聚合提示, 不逐条要求人工确认
+                    plan.additions_skipped += 1
                     continue
                 appended += 1
                 position = appended
@@ -493,10 +731,22 @@ def _analyse(payload, cancel=None, progress=None):
                 if exists and _equivalent(current.logical_value(position, field), values[field]):
                     continue
                 if isinstance(cell, MergedCell):
-                    plan.issue("merged_target", [key, field],
-                               f"目标 {cell.coordinate} 是合并单元格的一部分，无法独立回填", key=key_values)
+                    # 遮盖区(非左上角)物理上写不进值: 唯一合理动作是跳过该格,
+                    # 从待写入值中剔除以保持变更清单与实际写入一致
+                    merged_skips.append(cell.coordinate)
+                    existing.pop(field, None)
+                    final[key] = (old_position, existing, key_values, source.descriptor())
                 else:
                     plan.actions.append((position, field, values[field]))
+        if plan.additions_skipped:
+            plan.warnings.append(
+                f"发现 {plan.additions_skipped} 条反馈记录不在当前表中，因{append_reason}，"
+                "已自动跳过（未追加）；如需并入请调整当前表后重试")
+        if merged_skips:
+            head = "、".join(merged_skips[:4]) + ("…" if len(merged_skips) > 4 else "")
+            plan.warnings.append(
+                f"有 {len(merged_skips)} 处回填目标位于合并单元格的非左上角（{head}），"
+                "无法独立写入，已跳过；如需回填这些列请先调整合并单元格")
         # Compare final content against the explicit baseline; never infer change
         # from red font, or from the physical row number inside a moved formula.
         for key, (position, values, key_values, source) in final.items():
@@ -518,16 +768,15 @@ def _analyse(payload, cancel=None, progress=None):
                 if _equivalent(before, after):
                     if (payload.get("baseline") and baseline_record and field in compares
                             and field in base_map and key in records):
-                        # Red is a presentation of this baseline comparison, not a
-                        # permanent accumulated state. A reverted value adopts the
-                        # baseline's colour while keeping the current font's other
-                        # attributes. An originally red baseline remains red.
+                        # 红色填充是本次对照的呈现, 不是永久累积状态。值改回与基线一致时
+                        # 恢复基线的填充色, 字体保持当前样子; 基线本来就是红的则保持红。
                         current_cell = current.selection.cell(current.ws, position, field)
-                        color = current_cell.font.color
-                        if color and color.type == "rgb" and color.rgb[-6:].upper() == "FF0000":
+                        fill = current_cell.fill
+                        if (fill and fill.fill_type == "solid"
+                                and str(fill.fgColor.rgb or "")[-6:].upper() == "FF0000"):
                             baseline_cell = baseline.selection.cell(baseline.ws, baseline_record[0],
                                                                     base_map[field])
-                            plan.restore_colors.append((position, field, copy(baseline_cell.font.color)))
+                            plan.restore_colors.append((position, field, copy(baseline_cell.fill)))
                     continue
                 marked = field in compares
                 kind = "cancel" if isinstance(after, str) and after.strip() in ("取消", "已取消", "作废") else "update"
@@ -630,16 +879,12 @@ def reconcile_export(payload, cancel=None, progress=None):
         for position, field, value in plan.actions:
             _cancelled(cancel)
             plan.current.selection.cell(plan.current.ws, position, field).value = value
-        for position, field, color in plan.restore_colors:
-            cell = plan.current.selection.cell(plan.current.ws, position, field)
-            font = copy(cell.font)
-            font.color = color
-            cell.font = font
+        for position, field, fill in plan.restore_colors:
+            plan.current.selection.cell(plan.current.ws, position, field).fill = fill
         for position, field in plan.red:
-            cell = plan.current.selection.cell(plan.current.ws, position, field)
-            font = copy(cell.font)
-            font.color = "FFFF0000"
-            cell.font = font
+            # 改动标红 = 红色填充(字体原样保留)
+            plan.current.selection.cell(plan.current.ws, position, field).fill = PatternFill(
+                fill_type="solid", fgColor="FFFF0000")
         for suffix in (".xlsx", ".json"):
             fd, name = tempfile.mkstemp(prefix=".reconcile-", suffix=suffix, dir=out.parent)
             os.close(fd)

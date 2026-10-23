@@ -108,7 +108,6 @@ html, body {
   gap: 10px;
   height: 44px;
   padding: 0 14px;
-  -webkit-app-region: drag;
   position: relative;
   z-index: 10;
   border-bottom: 1px solid var(--hairline-2);

@@ -32,7 +32,7 @@ def _theme_signature(blob):
 
 def options_for(payload):
     raw = dict(payload.get("options") or {})
-    defaults = {"style": "fidelity", "remove_summary": False, "strip_serial_rows": True, "min_fill_ratio": 0.20,
+    defaults = {"style": "fidelity", "remove_summary": False, "strip_serial_rows": False, "min_fill_ratio": 0,
                 "renumber_serial": True, "source_column": False, "preserve_blank_rows": True,
                 "preserve_template_preamble": False, "metadata_columns": False, "exact_headers": False}
     defaults.update(raw)
@@ -134,7 +134,7 @@ def _generate_impl(payload, out, cancel=None, progress=None):
     warnings += report.get("warnings", [])
     if options.mode != "workbook":
         for item in report.get("header_detections", []):
-            if item.get("orientation") == "horizontal":
+            if item.get("orientation") == "horizontal" and not item.get("native_cross"):
                 warnings.append(f"{item['display']}：横向记录将按所选字段拼接为纵向结果；需保持横向原布局请使用各表独立成页。")
     totals = report.get("totals", {})
     for key, title in (("formulas_to_value", "公式已转为计算值"),

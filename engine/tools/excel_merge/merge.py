@@ -92,6 +92,7 @@ def _sheet_record(src):
     return {"display": src.display, "sheet": st.sheet_name,
             "orientation": getattr(st, "orientation", "vertical"),
             "orientation_confident": getattr(st, "orientation_confident", True),
+            "native_cross": getattr(st, "native_cross", False),
             "header_row": st.header_row, "height": st.height,
             "data_end_row": getattr(st, "data_end_row", 0),
             "columns": list(st.keys), "title": st.title,
@@ -233,6 +234,10 @@ def merge(paths, out_path, options=None, progress=None, cancel=None):
         seen_sheets = []
         for s in usable:
             is_dup = False
+            # 原生交叉表不去重: 横向拼接会把各来源记录列都追加到右侧
+            if getattr(s.structure, "native_cross", False):
+                deduped.append(s)
+                continue
             for prev in seen_sheets:
                 if (s.structure.sheet_name == prev.structure.sheet_name
                         and _sheets_identical(s, prev)):
@@ -279,7 +284,12 @@ def merge(paths, out_path, options=None, progress=None, cancel=None):
                 by_name.setdefault(s.structure.sheet_name, []).append(s)
             groups = []
             for bucket in by_name.values():
-                subs = _by_signature(bucket) if options.auto_group else [bucket]
+                # 同名Sheet=同一模板: 任一成员识别为交叉表 → 全组横向拼接,
+                # 不按签名再拆(记录列名不同是常态, 拆开反而丢拼接)
+                if any(getattr(s.structure, "native_cross", False) for s in bucket):
+                    subs = [bucket]
+                else:
+                    subs = _by_signature(bucket) if options.auto_group else [bucket]
                 groups.extend((b[0].structure.sheet_name, b) for b in subs)
         else:  # single / sheets
             subs = _by_signature(usable) if options.auto_group else [usable]

@@ -46,6 +46,7 @@ class SheetStructure:
     all_merges: list = field(default_factory=list)   # 全表合并范围（数据区还原用）
     col_widths: dict = field(default_factory=dict)   # 列宽（保留样式复制用）
     orientation: str = "vertical"         # vertical 常规 | horizontal 横向表(转置读取)
+    native_cross: bool = False            # 原生交叉表: 坐标即原始网格(前置区+首列字段标签+记录沿列)
     data_end_row: int = 0                 # 数据区域结束行(0=到文件末尾); 连续稀疏行尾部截断
     orientation_confident: bool = True    # 方向检测置信度(低→体检提示人工确认)
     pre_rows: list = field(default_factory=list)       # 表头前置区行(值, 共性检测/拼接用)
@@ -221,6 +222,8 @@ class _XlsxReader:
         elif force == 0 and window and (ws.max_row or 0) <= 20000 and (ws.max_column or 0) <= 500:
             orientation, confident = recognize.detect_orientation(window)
         if orientation == "horizontal":
+            if recognize.cross_table_shape(window):
+                return self._structure_native_cross(ws, sheet_name, ranges, confident)
             return self._structure_transposed(ws, sheet_name, ranges, confident)
         if force > 0:
             det = recognize.detect_header_row(window)
@@ -261,6 +264,52 @@ class _XlsxReader:
         st.data_end = st.data_end_row  # 别名: fidelity 用 data_end 访问
         return st
 
+    def _structure_native_cross(self, ws, sheet_name, ranges, confident=True):
+        """原生交叉表: 前置区+首列字段标签+记录沿列。结构坐标即原始网格,
+        与纵向表共用表头/数据区识别, 仅方向语义不同(记录=原列)。"""
+        window = [list(r) for r in ws.iter_rows(min_row=1, max_row=XLSX_WINDOW,
+                                                values_only=True)]
+        det = recognize.detect_header_row(window)
+        header_row = det.header_row or 1
+        header_row = recognize.extend_header_up(window, header_row, ranges)
+        post = recognize.detect_header_row_post(window, header_row, ranges)
+        if post:
+            header_row, height = post
+        else:
+            height = recognize.detect_region_height(window, header_row, ranges)
+        keys = recognize.flatten_keys(window, header_row, height, ranges)
+        st = SheetStructure(
+            sheet_name=sheet_name,
+            header_row=header_row,
+            height=height,
+            keys=keys,
+            merges=[mg for mg in ranges if mg.min_row >= header_row
+                    and mg.max_row <= header_row + height - 1],
+            all_merges=ranges,
+            col_widths=xlsx_column_widths(self.path, sheet_name),
+            orientation="horizontal",
+            native_cross=True,
+            orientation_confident=confident,
+            pre_rows=[list(r) for r in window[:header_row - 1]],
+            title=recognize.detect_title(window, header_row, ranges),
+            low_confidence=det.low_confidence,
+        )
+        warn = recognize.out_of_bounds_merge_warning(ranges, header_row, height)
+        if warn:
+            st.warnings.append(warn)
+        if det.header_row == 0:
+            st.warnings.append("未探测到表头，已按第 1 行处理（可手动指定）")
+        if not confident:
+            st.warnings.append("方向待确认（疑似交叉表），可在体检中手动切换纵向/横向")
+        st.data_end_row = detect_data_end_row(ws, header_row, height)
+        st.data_end = st.data_end_row
+        # 记录列范围(标签列之后的表头行非空列): 拆分/预览按"字段=行,记录=列"语义取值
+        header_values = window[header_row - 1] if header_row - 1 < len(window) else []
+        last = max((c for c in range(2, len(header_values) + 1)
+                    if header_values[c - 1] not in (None, "")), default=1)
+        st.cross_records = (2, max(2, last))
+        return st
+
     def _structure_transposed(self, ws, sheet_name, ranges, confident=True):
         """横向表：在转置视图（行=原列）上跑同一套识别逻辑。"""
         buf = [list(row) for row in ws.iter_rows(values_only=True)]
@@ -292,10 +341,18 @@ class _XlsxReader:
         st = source.structure
         start = st.header_row + st.height
         end = st.data_end_row if st.data_end_row > 0 else ws.max_row
-        if st.orientation == "horizontal":
+        if st.orientation == "horizontal" and not getattr(st, "native_cross", False):
             buf = [list(row) for row in ws.iter_rows()]
             ncols = max((len(r) for r in buf), default=0)
             for c in range(start - 1, ncols):
+                yield c + 1, [(buf[r][c] if c < len(buf[r]) else None)
+                              for r in range(len(buf))]
+            return
+        if getattr(st, "native_cross", False):
+            # 原生交叉表: 记录=原始列(标签列之后), 整列产出与转置路径同构
+            buf = [list(row) for row in ws.iter_rows()]
+            ncols = max((len(r) for r in buf), default=0)
+            for c in range(1, ncols):
                 yield c + 1, [(buf[r][c] if c < len(buf[r]) else None)
                               for r in range(len(buf))]
             return
@@ -305,7 +362,7 @@ class _XlsxReader:
     def header_cells(self, source):
         ws = self.wb[source.sheet_name]
         st = source.structure
-        if st.orientation == "horizontal":
+        if st.orientation == "horizontal" and not getattr(st, "native_cross", False):
             buf = [list(row) for row in ws.iter_rows()]
             return [[(buf[r][c] if c < len(buf[r]) else None) for r in range(len(buf))]
                     for c in range(st.header_row - 1, st.header_row - 1 + st.height)]
@@ -501,25 +558,34 @@ class _CsvReader:
 # --------------------------------------------------------------- 入口
 
 def detect_data_end_row(ws, header_row, height, max_check=200):
-    """检测数据区域实际结束行: 连续≥10行只有≤2个非空格 → 尾部占位, 截断.
+    """检测数据区域实际结束行: 连续≥10行完全全空(0非空格) → 截断.
 
+    注意: 只用"完全空行"截断, 不用"稀疏行"截断.
+    稀疏行(如仅有序号的行)可能是表格结构的一部分(用户确认保留).
     返回最后一行有效数据的行号(1-based), 0=到文件末尾.
+    实现约束: 单次 iter_rows 流式扫描. 只读工作表的 cell() 会逐格重解析
+    整个 sheet XML(O(行×列)次全表解析), 在此使用会让预览慢两个数量级.
     """
-    import itertools
     data_start = header_row + height
-    sparse_run = 0
-    last_data_row = 0
-    for r in itertools.islice(range(data_start, ws.max_row + 1), max_check):
-        ne = sum(1 for c in range(1, min(ws.max_column + 1, 20))
-                 if ws.cell(r, c).value not in (None, ""))
-        if ne <= 2:
-            sparse_run += 1
-            if sparse_run >= 10:
-                return last_data_row  # 数据结束于稀疏行之前最后一行有数据的行
+    max_row = ws.max_row or 0
+    if data_start > max_row:
+        return 0
+    max_col = min(ws.max_column or 1, 20)
+    empty_run = 0
+    last_nonempty_row = 0
+    checked = 0
+    for row in ws.iter_rows(min_row=data_start,
+                            max_row=min(max_row, data_start + max_check - 1),
+                            max_col=max_col, values_only=True):
+        checked += 1
+        if any(v not in (None, "") for v in row):
+            empty_run = 0
+            last_nonempty_row = data_start + checked - 1
         else:
-            sparse_run = 0
-            last_data_row = r
-    return 0  # 没有检测到明显的尾部截断
+            empty_run += 1
+            if empty_run >= 10:
+                return last_nonempty_row
+    return 0
 
 
 def open_reader(path):

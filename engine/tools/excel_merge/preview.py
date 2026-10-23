@@ -134,6 +134,13 @@ def _display(value, number_format):
 
 def automatic_selection(structure, max_row, max_col):
     axis = "columns" if structure and structure.orientation == "horizontal" else "rows"
+    # 原生交叉表(记录沿列): 选区语义 = 字段=行, 记录=列, 表头=标签列(A列)。
+    # 记录列取结构识别的表头行非空列范围, 而非"到表尾"(空列会变成空白组)。
+    cross = getattr(structure, "cross_records", None) if structure else None
+    if axis == "columns" and cross:
+        return {"axis": axis, "header_start": 1, "header_end": 1,
+                "data_start": cross[0], "data_end": min(cross[1], max_col),
+                "field_start": 1, "field_end": max_row}
     end = max_col if axis == "columns" else max_row
     hs = max(1, structure.header_row if structure else 1)
     he = min(end, hs + max(1, structure.height if structure else 1) - 1)
@@ -153,14 +160,18 @@ def _suggest(path, sheet, max_row, max_col, workbook=None):
             st = source.structure if source else None
         recognition = {"low_confidence": bool(st and st.low_confidence),
                        "orientation_confident": bool(st and st.orientation_confident),
+                       "native_cross": bool(getattr(st, "native_cross", False)),
                        "warnings": list(st.warnings) if st else ["未能识别表头，请核对所示范围。"]}
         if recognition["low_confidence"]:
             recognition["warnings"].append("表头识别把握较低，请核对表头和数据范围；需要时可在原表上调整。")
+        if recognition["native_cross"]:
+            recognition["warnings"].append(
+                "横向配置表：字段排在行上（点左侧行号选择），记录沿列方向；范围由程序识别。")
         return automatic_selection(st, max_row, max_col), recognition
     except Exception:
         return ({"axis": "rows", "header_start": 1, "header_end": 1,
                  "data_start": 2, "data_end": max_row, "field_start": 1, "field_end": max_col},
-                {"low_confidence": True, "orientation_confident": False,
+                {"low_confidence": True, "orientation_confident": False, "native_cross": False,
                  "warnings": ["自动识别未完成，暂按第一行表头显示，请核对或调整范围。"]})
     finally:
         if rd:

@@ -117,8 +117,7 @@ def test_extensions_report_notice_without_blocking_updates(tmp_path, part, featu
     assert ws["C2"].value == 12 and ws["D2"].value == 3
     assert ws["F2"].value == "=C2*2"
     assert ws["C2"].font.name == "宋体" and ws["C2"].font.bold and ws["C2"].font.italic
-    assert ws["C2"].font.color.rgb == "FFFF0000" and ws["C2"].number_format == "0.00"
-    assert ws["C2"].fill.fgColor.rgb == "00FFFFCC"
+    assert str(ws["C2"].fill.fgColor.rgb)[-6:] == "FF0000" and ws["C2"].number_format == "0.00"
     assert ws.page_setup.orientation == "landscape" and ws.page_margins.left == 0.4
     assert len(ws.data_validations.dataValidation) == 1 and len(ws.conditional_formatting) == 1
     assert Path(p["path"]).read_bytes() == original
@@ -188,9 +187,9 @@ def test_updates_missing_and_native_preservation(tmp_path):
     ws = wb["计划"]
     assert [ws.cell(2, c).value for c in range(1, 6)] == ["T1", "甲", 12, 8, "已取消"]
     assert ws["C3"].value == 20 and ws["D3"].value == 2
-    assert ws["C2"].font.color.rgb == "FFFF0000"
+    assert str(ws["C2"].fill.fgColor.rgb)[-6:] == "FF0000"
     assert ws["C2"].font.name == "宋体" and ws["C2"].font.bold and ws["C2"].font.italic
-    assert ws["D2"].font.color.type != "rgb" or ws["D2"].font.color.rgb != "FFFF0000"
+    assert ws["D2"].fill.fill_type != "solid" or str(ws["D2"].fill.fgColor.rgb or "")[-6:] != "FF0000"
     assert ws["C2"].number_format == "0.00" and ws.column_dimensions["C"].width == 27
     assert ws.row_dimensions[2].height == 35 and ws.freeze_panes == "C2"
     assert ws.page_setup.orientation == "landscape" and ws.page_margins.left == 0.4
@@ -224,41 +223,187 @@ def test_column_axis_and_composite_keys(tmp_path):
     wb = load_workbook(p["out"])
     ws = wb.active
     assert ws["B3"].value == 10 and ws["C3"].value == 25 and ws["C4"].value == 5
-    assert ws["C3"].font.color.rgb == "FFFF0000"
+    assert str(ws["C3"].fill.fgColor.rgb)[-6:] == "FF0000"
     wb.close()
 
 
-@pytest.mark.parametrize("role", ["current", "feedback"])
-@pytest.mark.parametrize("bad", [None, "duplicate"])
-def test_empty_and_duplicate_identity_never_pick_first_or_last(tmp_path, role, bad):
-    current = [("T1", "甲", 10, 0, "进行中"), ("T2", "乙", 20, 0, "进行中")]
+def test_duplicate_identity_in_base_table_blocks(tmp_path):
+    # 底表主键重复且内容不同: 自动跳过会让反馈被当成新记录追加, 必须修表
+    current = [("T1", "甲", 10, 0, "进行中"), ("T1", "乙", 20, 0, "进行中")]
     feedback = [("T1", "甲", 11, 1, "进行中"), ("T2", "乙", 21, 1, "进行中")]
-    records = current if role == "current" else feedback
-    records[1] = (None if bad is None else "T1", *records[1][1:])
     p = payload(tmp_path, current, feedback)
     preview = reconcile_preview(p)
     assert not preview["can_export"]
-    assert any(i["kind"] == ("empty_key" if bad is None else "duplicate_key") for i in preview["issues"])
+    assert any(i["kind"] == "duplicate_key" for i in preview["issues"])
     assert not reconcile_export(p)["exported"]
     assert not Path(p["out"]).exists()
 
 
-def test_conflicting_feedback_needs_explicit_source_or_keep(tmp_path):
+def test_merged_key_column_matches_by_block(tmp_path):
+    # 名称类主键纵向合并: 合并块=一条记录, 自动按块匹配(块内第k行↔反馈同名块第k行), 不再阻断
+    p = payload(tmp_path, [("T1", "甲", 10, 0, "进行中"), ("T1", "乙", 20, 1, "进行中"),
+                           ("T2", "丙", 30, 2, "进行中"), ("T2", "丁", 40, 3, "进行中")],
+                [("T1", "甲", 11, 1, "进行中")])
+    wb = load_workbook(p["path"])
+    wb.active.merge_cells("A2:A3")
+    wb.active.merge_cells("A4:A5")
+    wb.save(p["path"])
+    wb.close()
+    preview = reconcile_preview(p)
+    assert preview["can_export"], preview["issues"]
+    assert any("合并块 = 一条记录" in w for w in preview["warnings"])
+    assert len(preview["changes"]) == 2     # 计划 10→11 与 完成 0→1
+    assert all(c["position"] == 2 for c in preview["changes"])   # 都落在 T1 块的锚点行
+    assert reconcile_export(p)["exported"]
+
+
+def test_merged_name_key_auto_matches_by_block(tmp_path):
+    # 组名(名称)列做主键且纵向合并: 自动按合并块匹配, 更新落在块锚点行
+    p = payload(tmp_path, [(1, "甲", 10, 0, "进行中"), (2, "甲", 20, 1, "进行中"),
+                           (3, "乙", 30, 2, "进行中"), (4, "乙", 40, 3, "进行中")],
+                [(1, "甲", 11, 1, "进行中")])
+    p["key_fields"] = [2]
+    p["update_fields"] = [3, 4]
+    wb = load_workbook(p["path"])
+    wb.active.merge_cells("B2:B3")
+    wb.active.merge_cells("B4:B5")
+    wb.save(p["path"])
+    wb.close()
+    preview = reconcile_preview(p)
+    assert preview["can_export"], preview["issues"]
+    assert any("合并块 = 一条记录" in w for w in preview["warnings"])
+    change = next(c for c in preview["changes"])
+    assert change["key"][0] == "甲" and change["after"] == 11 and change["position"] == 2
+
+
+def test_group_mode_matches_per_group_ordinal(tmp_path):
+    # 分发-回填链路: 底稿序号全局连续(甲1-4/乙5-8), 反馈序号按组内从1开始。
+    # 分组模式下按(组名, 组内第几条)对应, 序号数值不要求一致。
+    base = [("例1", "甲", 1, 0), (1, "甲", 10, 0), (2, "甲", 20, 0), (3, "甲", 30, 0),
+            (4, "甲", 40, 0), (5, "乙", 50, 0), (6, "乙", 60, 0), (7, "乙", 70, 0), (8, "乙", 80, 0)]
+    feedback = [("例1", "甲", 1, 0), (1, "甲", 10, 0), (2, "甲", 20, 0), (3, "甲", 30, 0),
+                (4, "甲", 40, 0), (1, "乙", 50, 0), (2, "乙", 66, 1), (3, "乙", 70, 0), (4, "乙", 80, 0)]
+    p = payload(tmp_path, base, feedback)
+    p["key_fields"] = [1]
+    p["update_fields"] = [3]
+    p["group_field"] = 2
+    preview = reconcile_preview(p)
+    assert preview["can_export"], preview["issues"]
+    assert len(preview["changes"]) == 1
+    change = preview["changes"][0]
+    assert change["key"] == ["乙", 2] and change["after"] == 66
+    assert change["position"] == 8          # 底稿里乙组第2条 = 序号6所在行
+    assert preview["totals"] ["additions"] == 0 and preview["totals"]["missing"] == 0
+    assert any("分组匹配" in w for w in preview["warnings"])
+    assert reconcile_export(p)["exported"]
+    wb = load_workbook(p["out"])
+    assert wb.active["C8"].value == 66      # 值落在正确的行
+    wb.close()
+
+
+def test_group_mode_reports_unknown_group_as_new_records(tmp_path):
+    base = [(1, "甲", 10, 0), (2, "甲", 20, 0)]
+    feedback = [(1, "甲", 11, 0), (1, "丙", 99, 0)]
+    p = payload(tmp_path, base, feedback)
+    p["key_fields"] = [1]
+    p["update_fields"] = [3]
+    p["group_field"] = 2
+    preview = reconcile_preview(p)
+    assert preview["can_export"], preview["issues"]
+    assert any("底表中没有的分组：丙" in w for w in preview["warnings"])
+    assert any(c["kind"] == "new" and c["key"] == ["丙", 1] for c in preview["changes"])
+    assert next(c for c in preview["changes"] if c["kind"] != "new")["after"] == 11
+
+
+def test_group_mode_requires_single_key_field(tmp_path):
+    p = payload(tmp_path, [(1, "甲", 10, 0)], [(1, "甲", 11, 0)])
+    p["key_fields"] = [1, 2]
+    p["update_fields"] = [3]
+    p["group_field"] = 2
+    preview = reconcile_preview(p)
+    assert not preview["can_export"]
+    assert any(i["kind"] == "field_selection" and "一个序号列" in i["message"] for i in preview["issues"])
+
+
+def test_conflicting_feedback_for_absent_record_says_ignored(tmp_path):
+    # 底表没有该主键时, 反馈内多条矛盾反馈被整组忽略, 不再说"已保留当前内容"
+    p = payload(tmp_path, [("T1", "甲", 10, 0, "进行中")],
+                [("T2", "乙", 15, 1, "进行中"), ("T2", "丙", 16, 2, "进行中")])
+    preview = reconcile_preview(p)
+    assert not any("已保留当前内容" in w for w in preview["warnings"])
+    assert any("已全部忽略" in w for w in preview["warnings"])
+
+
+def test_duplicate_identity_in_feedback_keeps_current(tmp_path):
+    # 同一反馈文件内主键重复且值不同: 视同冲突, 默认保留当前内容
+    current = [("T1", "甲", 10, 0, "进行中"), ("T2", "乙", 20, 0, "进行中")]
+    feedback = [("T1", "甲", 11, 1, "进行中"), ("T1", "乙", 99, 1, "进行中")]
+    p = payload(tmp_path, current, feedback)
+    preview = reconcile_preview(p)
+    assert preview["can_export"]
+    assert any("不同反馈" in w for w in preview["warnings"])
+    result = reconcile_export(p)
+    assert result["exported"]
+    wb = load_workbook(p["out"])
+    assert wb.active["C2"].value == 10      # T1 保留当前
+    wb.close()
+
+
+def test_duplicate_identity_differing_only_in_irrelevant_columns_merges(tmp_path):
+    # 重复主键仅无关列不同(回填关注字段一致): 自动合并, 不阻断
+    current = [("T1", "甲", 10, 0, "进行中"), ("T2", "乙", 20, 0, "进行中")]
+    feedback = [("T1", "甲", 11, 1, "进行中"), ("T1", "丙", 11, 1, "进行中")]  # 仅姓名列(非回填字段)不同
+    p = payload(tmp_path, current, feedback)
+    preview = reconcile_preview(p)
+    assert preview["can_export"]
+    assert any("内容一致" in w for w in preview["warnings"])
+
+
+@pytest.mark.parametrize("role", ["current", "feedback"])
+def test_empty_identity_skipped_with_warning_not_blocked(tmp_path, role):
+    current = [("T1", "甲", 10, 0, "进行中"), ("T2", "乙", 20, 0, "进行中")]
+    feedback = [("T1", "甲", 11, 1, "进行中"), ("T2", "乙", 21, 1, "进行中")]
+    (current if role == "current" else feedback)[1] = (None, "乙", 20, 0, "进行中")
+    p = payload(tmp_path, current, feedback)
+    preview = reconcile_preview(p)
+    # 空主键本身不再作为阻断问题, 只汇总提示
+    assert not any(i["kind"] == "empty_key" for i in preview["issues"])
+    assert any("主键为空" in w for w in preview["warnings"])
+    if role == "feedback":
+        assert preview["can_export"]
+        assert reconcile_export(p)["exported"]
+    else:
+        # 底表身份缺失后, 反馈中的 T2 成为"是否追加新记录"的真实询问(见 addition 决策)
+        assert all(i["kind"] in {"addition"} for i in preview["issues"])
+
+
+@pytest.mark.parametrize("role", ["feedback"])
+def test_identical_duplicate_identity_merged_automatically(tmp_path, role):
+    current = [("T1", "甲", 10, 0, "进行中"), ("T2", "乙", 20, 0, "进行中")]
+    feedback = [("T1", "甲", 11, 1, "进行中"), ("T2", "乙", 21, 1, "进行中")]
+    records = current if role == "current" else feedback
+    records.append(tuple(records[0]))          # 完全相同的一条重复记录
+    p = payload(tmp_path, current, feedback)
+    preview = reconcile_preview(p)
+    assert preview["can_export"]
+    assert any("内容一致" in w for w in preview["warnings"])
+
+
+def test_conflicting_feedback_defaults_to_keep_current(tmp_path):
     p = payload(tmp_path, [("T1", "甲", 10, 0, "进行中")], [("T1", "甲", 11, 1, "进行中")])
     second = book(tmp_path / "other.xlsx", [("T1", "甲", 12, 2, "进行中")])
     p["feedback"].append({"path": str(second), "selection": selection(1)})
     preview = reconcile_preview(p)
-    issue = next(i for i in preview["issues"] if i["kind"] == "conflict")
-    assert not preview["can_export"] and len(issue["choices"]) == 3
-    resolve(p, preview, "conflict", "keep")
-    kept = reconcile_preview(p)
-    assert kept["can_export"] and kept["changes"] == []
-    choice = next(c["value"] for c in issue["choices"] if "other.xlsx" in c["label"])
-    resolve(p, preview, "conflict", choice)
+    # 冲突不再阻断: 默认保留当前内容, 冲突明细进变更清单与提示
+    assert preview["can_export"]
+    assert not any(i["kind"] == "conflict" for i in preview["issues"])
+    assert any("不同反馈" in w for w in preview["warnings"])
+    conflicts = [c for c in preview["changes"] if c["kind"] == "conflict"]
+    assert len(conflicts) == 1 and len(conflicts[0]["candidates"]) == 2
     result = reconcile_export(p)
     assert result["exported"]
     wb = load_workbook(p["out"])
-    assert wb.active["C2"].value == 12
+    assert wb.active["C2"].value == 10          # 保留当前
     wb.close()
 
 
@@ -271,12 +416,12 @@ def test_duplicate_import_is_idempotent(tmp_path):
     assert repeated["totals"]["duplicate_imports"] == 1
 
 
-def test_addition_requires_confirmation_and_extends_rules_and_template(tmp_path):
+def test_addition_auto_appends_and_extends_rules_and_template(tmp_path):
     p = payload(tmp_path, [("T1", "甲", 10, 0, "进行中")],
                 [("T1", "甲", 10, 0, "进行中"), ("T2", "乙", 15, 1, "进行中")], native=True)
     preview = reconcile_preview(p)
-    assert not preview["can_export"]
-    resolve(p, preview, "addition", "append")
+    # 安全场景下新记录默认自动追加, 不再确认
+    assert preview["can_export"] and not any(i["kind"] == "addition" for i in preview["issues"])
     result = reconcile_export(p)
     assert result["exported"], result
     wb = load_workbook(p["out"])
@@ -290,15 +435,52 @@ def test_addition_requires_confirmation_and_extends_rules_and_template(tmp_path)
     assert any(c["kind"] == "new" for c in result["changes"])
 
 
-def test_addition_with_footer_can_only_skip(tmp_path):
+def test_addition_with_footer_auto_skips(tmp_path):
     p = payload(tmp_path, [("T1", "甲", 10, 0, "进行中"), ("页脚", None, None, None, None)],
                 [("T2", "乙", 15, 1, "进行中")])
     p["selection"]["data_end"] = 2
     preview = reconcile_preview(p)
-    issue = next(i for i in preview["issues"] if i["kind"] == "addition")
-    assert [c["value"] for c in issue["choices"]] == ["skip"]
-    resolve(p, preview, "addition", "skip")
+    # 跳过是唯一安全动作: 自动执行并聚合提示, 不再逐条要求人工确认
+    assert preview["can_export"], preview["issues"]
+    assert not any(i["kind"] == "addition" for i in preview["issues"])
+    assert preview["totals"]["additions_skipped"] == 1
+    assert any("自动跳过" in w for w in preview["warnings"])
     assert reconcile_export(p)["exported"]
+    wb = load_workbook(p["out"])
+    assert wb.active["A3"].value == "页脚" and wb.active.max_row == 3
+    wb.close()
+
+
+def test_merged_shadow_target_auto_skips_and_anchor_still_writes(tmp_path):
+    p = payload(tmp_path, [("T1", "甲", 10, 0, "进行中"), ("T2", "乙", 20, 0, "进行中")],
+                [("T1", "甲", 11, 1, "进行中"), ("T2", "乙", 21, 2, "进行中")])
+    wb = load_workbook(p["path"])
+    wb.active.merge_cells("C2:C3")   # T1 的计划列成为锚点, T2 的 C3 成为遮盖区
+    wb.save(p["path"])
+    wb.close()
+    preview = reconcile_preview(p)
+    assert preview["can_export"], preview["issues"]
+    assert not any(i["kind"] == "merged_target" for i in preview["issues"])
+    assert any("非左上角" in w for w in preview["warnings"])
+    fields = [c["field"] for c in preview["changes"]]
+    assert 3 in fields                      # T1 锚点 C2 正常回填
+    assert preview["totals"]["additions_skipped"] == 0
+
+
+def test_new_records_do_not_duplicate_mapping_warnings(tmp_path):
+    p = payload(tmp_path, [("T1", "甲", 10, 0, "进行中")],
+                [("T1", "甲", 11, 1, "进行中"), ("T2", "乙", 15, 2, "进行中")])
+    # 底表与反馈表第 3、4 列都叫"计划": 标题歧义按相同列位置自动对应
+    book(tmp_path / "current.xlsx", [("T1", "甲", 10, 0, "进行中")],
+         ("编号", "单位", "计划", "计划", "状态"))
+    book(tmp_path / "feedback.xlsx",
+         [("T1", "甲", 11, 1, "进行中"), ("T2", "乙", 15, 2, "进行中")],
+         ("编号", "单位", "计划", "计划", "状态"))
+    p["update_fields"] = [3]
+    preview = reconcile_preview(p)
+    assert preview["can_export"], preview["issues"]
+    # 每个来源字段映射只提示一次(主键+回填集一次, 新记录全字段一次), 不随记录数刷屏
+    assert sum("列位置" in w for w in preview["warnings"]) == 2
 
 
 def test_reordered_columns_and_explicit_mapping(tmp_path):
@@ -314,14 +496,25 @@ def test_reordered_columns_and_explicit_mapping(tmp_path):
     assert reconcile_export(p)["exported"]
 
 
-def test_duplicate_header_requires_manual_mapping(tmp_path):
+def test_duplicate_header_maps_by_position_when_layout_matches(tmp_path):
     p = payload(tmp_path, [("T1", "甲", 10, 0, "进行中")], [("T1", "甲", 11, 1, "进行中")])
     book(Path(p["feedback"][0]["path"]), [("T1", "甲", 11, 1, "进行中")],
          ("编号", "单位", "计划", "计划", "状态"))
     p["update_fields"] = [3]
     preview = reconcile_preview(p)
+    assert preview["can_export"], preview["issues"]
+    assert next(c for c in preview["changes"] if c["field"] == 3)["after"] == 11
+    assert any("列位置" in w for w in preview["warnings"])
+
+
+def test_duplicate_header_without_position_match_still_blocks(tmp_path):
+    p = payload(tmp_path, [("T1", "甲", 10, 0, "进行中")], [("T1", "甲", 11, 1, "进行中")])
+    book(Path(p["feedback"][0]["path"]), [("T1", "甲", 11, 1, "进行中")],
+         ("编号", "单位", "完成", "计划", "计划"))
+    p["update_fields"] = [3]
+    preview = reconcile_preview(p)
     assert not preview["can_export"]
-    p["feedback"][0]["field_map"] = {"3": 3}
+    p["feedback"][0]["field_map"] = {"3": 4}
     assert reconcile_preview(p)["can_export"]
 
 
@@ -342,10 +535,11 @@ def test_baseline_and_relocated_formula_semantics(tmp_path):
     wb.close()
 
 
-def test_existing_red_is_not_evidence_of_change(tmp_path):
+def test_existing_red_fill_is_not_evidence_of_change(tmp_path):
     p = payload(tmp_path, [("T1", "甲", 10, 0, "进行中")], [("T1", "甲", 10, 0, "进行中")])
     wb = load_workbook(p["path"])
-    wb.active["C2"].font = Font(color="FFFF0000", bold=True)
+    wb.active["C2"].font = Font(color="FF112233", bold=True)
+    wb.active["C2"].fill = PatternFill(fill_type="solid", fgColor="FFFF0000")
     wb.save(p["path"])
     wb.close()
     assert reconcile_preview(p)["changes"] == []
@@ -455,14 +649,15 @@ def test_explicit_null_mapping_disables_automatic_matching(tmp_path):
 
 
 @pytest.mark.parametrize("axis", ["rows", "columns"])
-def test_second_import_reverted_to_explicit_baseline_restores_only_font_color(tmp_path, axis):
+def test_second_import_reverted_to_explicit_baseline_restores_only_fill(tmp_path, axis):
     p = payload(tmp_path, [("T1", "甲", 10, 0, "进行中")],
                 [("T1", "甲", 12, 5, "进行中")], axis=axis)
     planned = "C2" if axis == "rows" else "B3"
     completed = "D2" if axis == "rows" else "B4"
     baseline_path = p["path"]
     wb = load_workbook(baseline_path)
-    wb.active[planned].font = Font(name="宋体", size=13, bold=True, italic=True, color="FF112233")
+    wb.active[planned].font = Font(name="宋体", size=13, bold=True, italic=True)
+    wb.active[planned].fill = PatternFill(fill_type="solid", fgColor="FFFFCC00")
     wb.active[completed].font = Font(color="FF775577")
     wb.save(baseline_path)
     wb.close()
@@ -471,7 +666,7 @@ def test_second_import_reverted_to_explicit_baseline_restores_only_font_color(tm
     first = reconcile_export(p)
     assert first["exported"], first
     wb = load_workbook(first["out"])
-    assert wb.active[planned].font.color.rgb == "FFFF0000"
+    assert str(wb.active[planned].fill.fgColor.rgb)[-6:] == "FF0000"
     # A user changes other font attributes between monthly imports.
     font = copy(wb.active[planned].font)
     font.sz = 16
@@ -491,7 +686,9 @@ def test_second_import_reverted_to_explicit_baseline_restores_only_font_color(tm
     assert second["exported"], second
     wb = load_workbook(second["out"])
     cell = wb.active[planned]
-    assert cell.value == 10 and cell.font.color.rgb == "FF112233"
+    assert cell.value == 10
+    # 值改回与基线一致 → 填充恢复基线的黄色; 字体保持用户后来改的样子
+    assert cell.fill.fill_type == "solid" and cell.fill.fgColor.rgb == "FFFFCC00"
     assert cell.font.name == "宋体" and cell.font.sz == 16
     assert cell.font.bold and cell.font.italic and cell.font.strike
     assert wb.active[completed].value == 8 and wb.active[completed].font.color.rgb == "FF775577"
@@ -501,7 +698,8 @@ def test_second_import_reverted_to_explicit_baseline_restores_only_font_color(tm
 def test_explicit_baseline_original_red_remains_red_without_content_change(tmp_path):
     p = payload(tmp_path, [("T1", "甲", 10, 0, "进行中")], [("T1", "甲", 10, 0, "进行中")])
     wb = load_workbook(p["path"])
-    wb.active["C2"].font = Font(name="宋体", color="FFFF0000", bold=True)
+    wb.active["C2"].font = Font(name="宋体", bold=True)
+    wb.active["C2"].fill = PatternFill(fill_type="solid", fgColor="FFFF0000")
     wb.save(p["path"])
     wb.close()
     p["baseline"] = {"path": p["path"], "selection": selection(1)}
@@ -509,5 +707,5 @@ def test_explicit_baseline_original_red_remains_red_without_content_change(tmp_p
     assert preview["can_export"] and preview["changes"] == []
     assert reconcile_export(p)["exported"]
     wb = load_workbook(p["out"])
-    assert wb.active["C2"].font.color.rgb == "FFFF0000" and wb.active["C2"].font.bold
+    assert str(wb.active["C2"].fill.fgColor.rgb)[-6:] == "FF0000" and wb.active["C2"].font.bold
     wb.close()

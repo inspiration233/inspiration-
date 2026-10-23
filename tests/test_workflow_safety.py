@@ -137,12 +137,8 @@ def test_empty_filter_does_not_hide_other_blocking_errors(tmp_path):
 def test_nested_filtered_resolution_survives_preview_and_export(tmp_path):
     p = payload(tmp_path, total=True)
     first = workflow.workflow_preview(p)
-    issue = next(issue for issue in first["issues"] if issue.get("code") == "formula_scope")
-    assert issue["id"].startswith("filtered:") and not first["can_export"]
-    patch = issue["choices"][0]["patch"]
-    p["filtered_output"].update(patch["filtered_output"])
-    ready = workflow.workflow_preview(p)
-    assert ready["can_export"], ready
+    # 引用口径自动按保留记录计算: 附加筛选结果不再产生待确认问题
+    assert first["can_export"], first
     result = workflow.workflow_export(p)
     assert result["exported"]
     wb = load_workbook(result["filtered_output_path"])

@@ -13,7 +13,7 @@
     const cellRef = (row, col) => colName(col) + row;
     const parseCell = raw => { const m = /^\$?([A-Z]+)\$?([1-9]\d*)$/i.exec(raw.trim()); if (!m) throw Error('请使用 A1 这样的单元格坐标。'); return { row: Number(m[2]), col: [...m[1].toUpperCase()].reduce((n, c) => n * 26 + c.charCodeAt(0) - 64, 0) }; };
     const parseRange = raw => { const parts = raw.trim().split(':'); if (parts.length > 2) throw Error('区域格式应为 A3:F4。'); const a = parseCell(parts[0]), b = parseCell(parts[1] || parts[0]); return { r1: Math.min(a.row, b.row), r2: Math.max(a.row, b.row), c1: Math.min(a.col, b.col), c2: Math.max(a.col, b.col) }; };
-    const defaults = () => ({ files: [], feedback: [], baseline: null, active: null, role: 'group', group: [], groupMode: 'combination', filters: [], outputFilters: [], filteredEnabled: false, filteredOptions: {resolutions:{}}, blankGroup: 'separate', outputFields: [], filteredFields: [], keys: [], updates: [], compares: [], resolutions: {}, retained: [], shared: [], options: { mode: 'auto', align: 'loose', shape: 'auto', templateIndex: 0, templateSheet: null, hidden: false, source: false, removeSummary: false, keywords: '合计,小计,总计,汇总,累计', stripSerial: true, minFillRatio: 20, renumber: true, title: false }, result: null, payload: null, version: 0, previewVersion: -1, schemeProblems: [] });
+    const defaults = () => ({ files: [], feedback: [], baseline: null, active: null, role: 'group', group: [], groupMode: 'combination', filters: [], outputFilters: [], filteredEnabled: false, filteredOptions: {resolutions:{}}, blankGroup: 'separate', outputFields: [], filteredFields: [], keys: [], updates: [], compares: [], groupField: null, resolutions: {}, retained: [], shared: [], options: { mode: 'auto', align: 'loose', shape: 'auto', templateIndex: 0, templateSheet: null, hidden: false, source: false, removeSummary: false, keywords: '合计,小计,总计,汇总,累计', stripSerial: true, minFillRatio: 20, renumber: true, title: false, exampleRows: true, retainAll: false }, result: null, payload: null, version: 0, previewVersion: -1, schemeProblems: [] });
     const sessions = { merge: defaults(), split: defaults(), reconcile: defaults() };
     sessions.reconcile.role = 'keys';
     const state = { mode: 'merge', busy: false, merging: false, disposed: false, gridRequest: 0, operationRequest: 0, picking: null, firstCorner: null, rangeDirty: false, offProgress: null };
@@ -30,6 +30,8 @@
     const fieldText = (f, axis = primaryConfig()?.selection?.axis) => `${axis === 'columns' ? '第 ' + f.index + ' 行' : colName(f.index) + ' 列'} · ${f.label}`;
     const fieldByIndex = index => fieldList().find(f => f.index === Number(index));
     const fieldLabel = index => fieldByIndex(index)?.label || `待重选字段 ${index}`;
+    // 同名字段(如整行XXX)必须能分辨: 标签带行/列位置
+    const fieldChipLabel = index => { const f = fieldByIndex(index); return f ? fieldText(f) : fieldLabel(index); };
     const warningMessages = warnings => [...new Set((warnings||[]).map(w=>typeof w==='string'?w:w?.message||text(w)).map(w=>w.trim()).filter(Boolean))];
     const nativeSource = source => /\.xlsx$/i.test(source?.path || '');
     const matchSignature = field => field?.match_signature ?? field?.signature;
@@ -109,6 +111,7 @@
       if (!source) { $('workspace').classList.add('hidden'); return; }
       current().active = { bucket, index }; state.picking = null; state.firstCorner = null; state.rangeDirty = false;
       const request = ++state.gridRequest, mode = state.mode;
+      const newlyOpened = $('workspace').classList.contains('hidden');
       $('workspace').classList.remove('hidden'); $('grid-status').textContent = '正在读取原表…';
       renderFiles();
       try {
@@ -116,6 +119,8 @@
         const cfg = await loadSource(source, sheet, page);
         if (request !== state.gridRequest || mode !== state.mode || state.disposed) return;
         source.sheet = cfg.report.sheet;
+        // 文件加入后工作区在首屏之下, 不自动滚过去用户根本找不到点击区
+        if (newlyOpened) $('workspace').scrollIntoView({ behavior: 'smooth', block: 'start' });
         renderWorkspace(); renderRoles(); renderFilters(); renderFiles(); updateAction();
         await renderMapping();
       } catch (error) {
@@ -177,7 +182,9 @@
       setOptions($('sheet-select'), source.sheets.map(s => [s.name, s.name + (s.state !== 'visible' ? '（隐藏）' : '')]), source.sheet);
       $('sheet-enabled-wrap').classList.toggle('hidden', state.mode !== 'merge'); $('sheet-enabled').checked = !source.excluded.includes(source.sheet);
       $('axis-select').value = cfg.selection.axis; $('header-range').value = ranges.header; $('data-range').value = ranges.data;
-      for(const id of ['axis-select','header-range','data-range','pick-header','pick-data','apply-range'])$(id).disabled=!nativeSource(source);
+      // 横向配置表(记录沿列)由程序识别范围, 手动改向/框选会破坏"字段=行,记录=列"语义
+      const crossSheet = !!cfg.report?.recognition?.native_cross;
+      for(const id of ['axis-select','header-range','data-range','pick-header','pick-data','apply-range'])$(id).disabled=!nativeSource(source)||crossSheet;
       $('source-warnings').textContent = warningMessages(report.warnings).join('；');
       $('source-warnings').classList.toggle('hidden',!$('source-warnings').textContent);
       renderGrid(report); renderToolbar(); pickHint();
@@ -186,7 +193,7 @@
       const allowed = ['fontFamily','fontSize','color','background','fontWeight','fontStyle','textAlign','verticalAlign','whiteSpace','textDecoration','borderTop','borderBottom','borderLeft','borderRight'];
       for (const key of allowed) if (style?.[key] != null) td.style[key] = String(style[key]);
     }
-    function roleFields() { const s = current(); return state.mode === 'split' ? (s.role==='outputFields'?s.outputFields:s.group.filter(g => g.kind === 'field').map(g => g.index)) : state.mode === 'reconcile' ? s[s.role] || [] : []; }
+    function roleFields() { const s = current(); return state.mode === 'split' ? (s.role==='outputFields'?s.outputFields:s.group.filter(g => g.kind === 'field').map(g => g.index)) : state.mode === 'reconcile' ? (s.role==='groupField'?[s.groupField].filter(v=>v!=null):s[s.role] || []) : []; }
     function renderGrid(report) {
       const wrap = $('grid-wrap'), oldLeft = wrap.scrollLeft, oldTop = wrap.scrollTop;
       const viewport = report.viewport || { start_row: 1, start_col: 1, end_row: Math.min(report.max_row, 80), end_col: Math.min(report.max_column, 40) };
@@ -229,26 +236,56 @@
         }
         tbody.append(tr);
       }
-      table.append(tbody); wrap.replaceChildren(table); wrap.scrollLeft = oldLeft; wrap.scrollTop = oldTop;
+      table.append(tbody); const sizer = make('div','grid-scale'); sizer.append(table); wrap.replaceChildren(sizer); wrap.scrollLeft = oldLeft; wrap.scrollTop = oldTop; applyGridZoom();
       $('grid-status').textContent = `${report.max_row} 行 × ${report.max_column} 列 · 当前 ${cellRef(sr,sc)}:${cellRef(er,ec)}${report.truncated ? '（分段预览）' : ''}`;
       $('page-prev').disabled = sr <= 1; $('page-next').disabled = er >= report.max_row; $('page-left').disabled = sc <= 1; $('page-right').disabled = ec >= report.max_column;
+    }
+    // 预览缩放: 默认"适应列宽"(不低于35%), 可手动增减; 大表第一次就能看全
+    const GRID_MIN_ZOOM = 0.35;
+    const gridZoom = { mode: 'fit', scale: 1 };
+    function applyGridZoom() {
+      const wrap = $('grid-wrap'), sizer = wrap.firstElementChild;
+      const table = sizer && sizer.querySelector && sizer.querySelector('table');
+      if (!table) return;
+      if (gridZoom.mode === 'fit')
+        gridZoom.scale = Math.min(1, Math.max(GRID_MIN_ZOOM, (wrap.clientWidth - 2) / Math.max(1, table.scrollWidth)));
+      const z = gridZoom.scale, scaled = z < 0.995;
+      table.style.transform = scaled ? `scale(${z})` : '';
+      sizer.style.width = scaled ? Math.ceil(table.scrollWidth * z) + 'px' : '';
+      sizer.style.height = scaled ? Math.ceil(table.scrollHeight * z) + 'px' : '';
+      $('zoom-level').textContent = (gridZoom.mode === 'fit' ? '适应 ' : '') + Math.round(z * 100) + '%';
+    }
+    function syncModals() {
+      const open = !$('done-pane').classList.contains('hidden') || !$('progress-pane').classList.contains('hidden');
+      document.body.classList.toggle('modal-open', open);
     }
     function renderToolbar() {
       const bar = $('field-toolbar'); bar.replaceChildren();
       if (state.mode === 'merge') { bar.append(make('span', '', '蓝色区域为表头，浅蓝区域为数据；如识别不合适，直接修改上方范围。')); return; }
       if (!isPrimary(activeSource())) { bar.append(make('span', '', '正在查看反馈或原始版本。可修改范围，并在下方核对字段对应；点底表文件返回字段选择。')); return; }
       bar.append(make('span', '', '点击列头 / 行头，选择：'));
-      const choices = state.mode === 'split' ? [['group','拆分依据'],['outputFields','输出字段']] : [['keys','对应记录'],['updates','允许回填'],['compares','变化标红'],...(current().filteredEnabled?[['filteredFields','筛选结果字段']]:[])];
+      const choices = state.mode === 'split' ? [['group','拆分依据'],['outputFields','输出字段']] : [['groupField','单位列（分组）'],['keys','认记录（主键）'],['updates','允许修改的列'],['compares','改后标红的列'],...(current().filteredEnabled?[['filteredFields','筛选结果字段']]:[])];
       for (const [value,label] of choices) { const button = make('button', current().role === value ? 'active' : '', label); button.onclick = () => { current().role = value; renderToolbar(); renderGrid(config(activeSource()).report); }; bar.append(button); }
+      // 选中反馈就在网格正上方——chips 区可能在屏幕外, 这里给即时可见的确认
+      const picked = roleFields();
+      if (picked.length) bar.append(make('span', 'hint', `已选 ${picked.length} 项：${picked.slice(0, 4).map(fieldChipLabel).join('、')}${picked.length > 4 ? ' 等' : ''}`));
     }
     function selectField(index, axis) {
-      const source = activeSource(), cfg = config(source); if (!cfg || cfg.selection.axis !== axis || state.mode === 'merge') return;
+      const source = activeSource(), cfg = config(source); if (!cfg || state.mode === 'merge') return;
+      if (cfg.selection.axis !== axis) {
+        // 点错方向不给"静默无效": 明确告知字段在哪一侧
+        notice(cfg.selection.axis === 'columns'
+          ? '这张表是横向布局（记录沿列）：字段排在左侧行号上，请点击行号选择；如需按列处理，可先在上方把方向改为纵向。'
+          : '这张表是纵向布局：字段排在顶部列号上，请点击列号选择；如需按行处理，可先在上方把方向改为横向。');
+        return;
+      }
       if (!isPrimary(source)) { notice('请先点选底表文件，再选择用于拆分或回填的字段。'); return; }
       if (!cfg.report.fields.some(f => f.index === index)) { notice('这个行或列不在当前字段范围内。请先调整范围。'); return; }
       const s = current();
-      if (state.mode === 'split'&&s.role!=='outputFields') { const pos = s.group.findIndex(g => g.kind === 'field' && g.index === index); if (pos >= 0) s.group.splice(pos,1); else s.group.push({kind:'field',index}); }
+      if (state.mode === 'reconcile' && s.role === 'groupField') { s.groupField = s.groupField === index ? null : index; }
+      else if (state.mode === 'split'&&s.role!=='outputFields') { const pos = s.group.findIndex(g => g.kind === 'field' && g.index === index); if (pos >= 0) s.group.splice(pos,1); else s.group.push({kind:'field',index}); }
       else { const list = s[s.role], pos = list.indexOf(index); if (pos >= 0) list.splice(pos,1); else list.push(index); }
-      invalidate(); renderRoles(); renderGrid(cfg.report);
+      invalidate(); renderRoles(); renderToolbar(); renderGrid(cfg.report);
     }
     function pickHint() {
       $('selection-hint').classList.toggle('picking', !!state.picking);
@@ -284,10 +321,32 @@
     }
     function renderRoles() {
       const s = current();
-      const chips = (id, values, label, remove) => { const box = $(id); box.replaceChildren(); if (!values.length) box.append(make('span','empty-chip','尚未选择 · 在原表上点列头或行头')); values.forEach((v,i) => { const chip=make('button','field-chip',label(v)+' ×'); chip.onclick=()=>{remove(i);invalidate();renderRoles();if(config(activeSource()))renderGrid(config(activeSource()).report);};box.append(chip); }); };
-      chips('group-chips',s.group,g=>g.kind==='field'?fieldLabel(g.index):g.kind==='cell'?'单元格 '+g.ref:'工作表名',i=>s.group.splice(i,1));
-      for(const [id,key] of [['key-chips','keys'],['update-chips','updates'],['compare-chips','compares'],['output-chips','outputFields'],['filtered-field-chips','filteredFields']]) chips(id,s[key],fieldLabel,i=>s[key].splice(i,1));
-      $('blank-group').value=s.blankGroup;
+      const chips = (id, values, label, remove, roleKey) => { const box = $(id); box.replaceChildren();
+        if (!values.length) box.append(make('span','empty-chip','尚未选择（点表格的 A、B、C 列头）'));
+        // 入口按钮常驻: 先把"当前点选用途"切到本区, 再跳到表格——
+        // 否则列头会一直加进上一次的用途里
+        const go = make('button','ghost compact','＋ 在表上点选');
+        go.onclick = async () => { const s=current(); if (!s.files.length) { notice('请先在上方选择文件。', true); return; }
+          if (roleKey && s.role !== roleKey) { s.role = roleKey; renderToolbar(); }
+          // 正在查看反馈/原始版本时, 点列会提示"请先点选底表"——入口按钮负责带回底表
+          const active = s.active;
+          if (!active || active.bucket !== 'files') { await showSource(s.files[0], 'files', 0); }
+          $('workspace').scrollIntoView({behavior:'smooth',block:'start'}); };
+        values.forEach((v,i) => { const chip=make('button','field-chip',label(v)+' ×'); chip.onclick=()=>{remove(i);invalidate();renderRoles();renderToolbar();if(config(activeSource()))renderGrid(config(activeSource()).report);};box.append(chip); });
+        box.append(go); };
+      chips('group-chips',s.group,g=>g.kind==='field'?fieldChipLabel(g.index):g.kind==='cell'?'单元格 '+g.ref:'工作表名',i=>s.group.splice(i,1),'group');
+      const unitBox=$('group-unit-chips');unitBox.replaceChildren();
+      const unitGo=make('button','ghost compact','＋ 在表上点选');
+      unitGo.onclick=async()=>{const s=current();if(!s.files.length){notice('请先在上方选择文件。',true);return;}
+        if(s.role!=='groupField'){s.role='groupField';renderToolbar();}
+        const active=s.active;
+        if(!active||active.bucket!=='files'){await showSource(s.files[0],'files',0);}
+        $('workspace').scrollIntoView({behavior:'smooth',block:'start'});};
+      if(s.groupField!=null){const chip=make('button','field-chip',fieldChipLabel(s.groupField)+' ×');chip.onclick=()=>{s.groupField=null;invalidate();renderRoles();renderToolbar();if(config(activeSource()))renderGrid(config(activeSource()).report);};unitBox.append(chip);}
+      else unitBox.append(make('span','empty-chip','未选择 · 按主键值直接匹配（不分组）'));
+      unitBox.append(unitGo);
+      for(const [id,key] of [['key-chips','keys'],['update-chips','updates'],['compare-chips','compares'],['output-chips','outputFields'],['filtered-field-chips','filteredFields']]) chips(id,s[key],fieldChipLabel,i=>s[key].splice(i,1),key);
+      $('blank-group').value=s.blankGroup;$('split-example-rows').checked=!!s.options.exampleRows;$('split-retain-all').checked=!!s.options.retainAll;
       $('group-by-sheet').checked=s.group.some(g=>g.kind==='sheet');$('group-mode').value=s.groupMode;
       renderToolbar();
     }
@@ -297,8 +356,8 @@
       $('filtered-enabled').checked=s.filteredEnabled;$('filtered-controls').classList.toggle('hidden',!s.filteredEnabled);
       for(const [boxId,list] of [['filter-rows',s.filters],['filtered-rows',s.outputFilters]]){const box=$(boxId);box.replaceChildren();
       list.forEach((filter,index)=>{
-        const row=make('div','filter-row'),field=fieldSelect(filter.field),op=make('select'),value=make('input'),end=fieldSelect(filter.end_field,'选择截止字段'),rm=make('button','ghost','×');value.type='text';value.value=filter.value||'';value.placeholder=filter.op==='month'?'3 或 2026-03':filter.op==='interval'?'目标值或月份':'要保留的内容';
-        setOptions(op,[['equals','等于'],['contains','包含文字'],['month','属于月份'],['interval','起止区间覆盖']],filter.op||'equals');
+        const row=make('div','filter-row'),field=fieldSelect(filter.field),op=make('select'),value=make('input'),end=fieldSelect(filter.end_field,'选择截止字段'),rm=make('button','ghost','×');value.type='text';value.value=filter.value||'';value.placeholder=filter.op==='month'?'3 或 2026-03':filter.op==='interval'?'目标值或月份':['gt','lt','ge','le'].includes(filter.op)?'要比较的数字':filter.op==='oneof'?'多个值，逗号分隔':'要保留的内容';
+        setOptions(op,[['equals','等于'],['contains','包含文字'],['oneof','任一匹配（逗号分隔）'],['gt','大于'],['lt','小于'],['ge','不小于'],['le','不大于'],['month','属于月份'],['interval','起止区间覆盖']],filter.op||'equals');
         end.classList.toggle('hidden',filter.op!=='interval');
         field.onchange=()=>{filter.field=field.value?Number(field.value):null;invalidate();};op.onchange=()=>{filter.op=op.value;invalidate();renderFilters();};value.oninput=()=>{filter.value=value.value;invalidate();};end.onchange=()=>{filter.end_field=end.value?Number(end.value):null;invalidate();};rm.onclick=()=>{list.splice(index,1);invalidate();renderFilters();};
         row.append(field,op,end,value,rm);box.append(row);
@@ -339,7 +398,7 @@
       else if(sources.length>1){const first=sources[0].sheets.filter(sh=>!sources[0].excluded.includes(sh.name)&&(s.options.hidden||sh.state==='visible')).map(sh=>sh.name);if(first.length>1&&sources.every(f=>{const names=f.sheets.filter(sh=>!f.excluded.includes(sh.name)&&(s.options.hidden||sh.state==='visible')).map(sh=>sh.name);return names.length===first.length&&first.every(name=>names.includes(name));})){mode='group';reason='同名工作表分别汇总';}}
       s.recommendation={mode,reason};$('mode-reco').textContent=s.options.mode==='auto'?`将生成：${reason}`:'';return mode;
     }
-    function engineOptions() { const o=current().options;return {mode:o.mode==='auto'?recommend():o.mode,align:o.align,style:'fidelity',merge_shape:o.shape,template_index:Number(o.templateIndex)||0,remove_summary:o.removeSummary,summary_keywords:o.keywords.split(/[,，]/).map(k=>k.trim()).filter(Boolean),strip_serial_rows:o.stripSerial,renumber_serial:o.renumber,source_column:o.source,include_hidden:o.hidden,title_as_header:o.title,force_header_row:0, min_fill_ratio:(Number(o.minFillRatio)||Number($('opt-fill-ratio')?.value)||20)/100}; }
+    function engineOptions() { const o=current().options;return {mode:o.mode==='auto'?recommend():o.mode,align:o.align,style:'fidelity',merge_shape:o.shape,template_index:Number(o.templateIndex)||0,remove_summary:o.removeSummary,summary_keywords:o.keywords.split(/[,，]/).map(k=>k.trim()).filter(Boolean),strip_serial_rows:o.stripSerial,renumber_serial:o.renumber,source_column:o.source,include_hidden:o.hidden,title_as_header:o.title,force_header_row:0, min_fill_ratio:(Number.isFinite(Number(o.minFillRatio))?Math.max(0,Number(o.minFillRatio)):20)/100}; }
     function renderOptions() {
       const s=current(),o=s.options;
       root.querySelectorAll('[data-mode]').forEach(b=>{b.classList.toggle('active',b.dataset.mode===state.mode);b.setAttribute('aria-pressed',String(b.dataset.mode===state.mode));});
@@ -349,13 +408,14 @@
       for(const mode of ['merge','split','reconcile'])$(mode+'-options').classList.toggle('hidden',mode!==state.mode);
       root.querySelectorAll('[name="merge-output"]').forEach(input=>input.checked=input.value===o.mode);
       for(const [id,key] of [['opt-shape','shape'],['opt-align','align'],['opt-keywords','keywords']])$(id).value=o[key];
+      $('opt-fill-ratio').value=o.minFillRatio;
       for(const [id,key] of [['opt-hidden','hidden'],['opt-source','source'],['opt-summary','removeSummary'],['opt-serial-strip','stripSerial'],['opt-serial-num','renumber'],['opt-title','title']])$(id).checked=o[key];
       renderFiles();renderRoles();renderFilters();renderSchemes();
     }
     async function switchMode(mode) {
       if(state.busy||state.merging||!sessions[mode])return;
       state.mode=mode;state.gridRequest++;state.operationRequest++;state.rangeDirty=false;notice();renderOptions();
-      $('done-pane').classList.add('hidden');$('progress-pane').classList.add('hidden');
+      $('done-pane').classList.add('hidden');$('progress-pane').classList.add('hidden');syncModals();
       $('result-pane').classList.add('hidden');$('workspace').classList.add('hidden');
       const s=current(),source=activeSource()||s.files[0];if(source)await showSource(source,s.active?.bucket||'files',s.active?.index||0);
       if(s.result&&s.previewVersion===s.version)renderResult(s.result);
@@ -377,7 +437,7 @@
       if(state.mode==='split'){
         if(!s.group.length)throw Error('请点选至少一个拆分字段，或选择命名单元格 / 工作表名。');
         for(const f of s.filters)if(!f.field||!String(f.value??'').trim()||(f.op==='interval'&&!f.end_field))throw Error('请补全筛选字段、条件值，以及区间条件的截止字段。');
-        return {...base,group_fields:s.group.map(g=>g.kind==='cell'?{kind:'cell',ref:g.ref}:clone(g)),group_mode:s.groupMode,blank_group:s.blankGroup,...(s.outputFields.length?{output_fields:[...s.outputFields]}:{}),filters:clone(s.filters),retain_sheets:clone(s.retained),shared_label_ranges:clone(s.shared),resolutions:clone(s.resolutions),allow_warnings:false};
+        return {...base,group_fields:s.group.map(g=>g.kind==='cell'?{kind:'cell',ref:g.ref}:clone(g)),group_mode:s.groupMode,blank_group:s.blankGroup,include_example_rows:!!s.options.exampleRows,retain_all_sheets:!!s.options.retainAll,...(s.outputFields.length?{output_fields:[...s.outputFields]}:{}),filters:clone(s.filters),retain_sheets:clone(s.retained),shared_label_ranges:clone(s.shared),resolutions:clone(s.resolutions),allow_warnings:false};
       }
       if(s.filteredEnabled){if(!s.outputFilters.length)throw Error('请为额外筛选结果至少添加一个条件。');for(const f of s.outputFilters)if(!f.field||!String(f.value??'').trim()||(f.op==='interval'&&!f.end_field))throw Error('请补全额外筛选结果的条件。');}
       if(!s.feedback.length)throw Error('请添加至少一份反馈文件。');if(!s.keys.length)throw Error('请选择用于对应同一条记录的字段。');if(!s.updates.length)throw Error('请选择允许回填的字段。');
@@ -385,7 +445,7 @@
       for(const file of s.feedback){if(!config(file))await loadSource(file);const fc=config(file);feedback.push({path:file.path,sheet:file.sheet,selection:fc.selection,selection_origin:fc.selection_origin||'auto',field_map:{...autoMap(cfg.report.fields,fc.report.fields),...fc.field_map}});}
       let baseline;
       if(s.baseline){if(!config(s.baseline))await loadSource(s.baseline);const bc=config(s.baseline);baseline={path:s.baseline.path,sheet:s.baseline.sheet,selection:bc.selection,selection_origin:bc.selection_origin||'auto',field_map:{...autoMap(cfg.report.fields,bc.report.fields),...bc.field_map}};}
-      return {...base,feedback,...(baseline?{baseline}:{}),key_fields:[...s.keys],update_fields:[...s.updates],compare_fields:[...s.compares],resolutions:clone(s.resolutions),...(s.filteredEnabled?{filtered_output:{...clone(s.filteredOptions),filters:clone(s.outputFilters),...(s.filteredFields.length?{output_fields:[...s.filteredFields]}:{})}}:{})};
+      return {...base,feedback,...(baseline?{baseline}:{}),key_fields:[...s.keys],update_fields:[...s.updates],compare_fields:[...s.compares],...(s.groupField!=null?{group_field:s.groupField}:{}),resolutions:clone(s.resolutions),...(s.filteredEnabled?{filtered_output:{...clone(s.filteredOptions),filters:clone(s.outputFilters),...(s.filteredFields.length?{output_fields:[...s.filteredFields]}:{})}}:{})};
     }
     async function previewResult() {
       if(state.busy||state.merging)return false;
@@ -424,7 +484,7 @@
         const rowsKnown=groups.length>0&&groups.every(group=>group.row_count!=null);
         const detail=!independent&&records!=null?`${records} 条记录`:rowsKnown?`合计 ${groups.reduce((sum,group)=>sum+Number(group.row_count),0)} 行（含标题和表头）`:'';
         $('result-summary').textContent=`${groups.length} 张结果工作表${detail?' · '+detail:''}`;
-      }else $('result-summary').textContent=state.mode==='reconcile'?`${totals.records??'—'} 条底表记录 · ${totals.changes??changes.length} 处变化 · ${totals.additions??changes.filter(c=>c.kind==='new').length} 条新增 · ${totals.missing??report.missing?.length??0} 条未收到反馈`:`${groups.length} 个输出文件 · ${totals.records??totals.rows??groups.reduce((n,g)=>n+(Number(g.count)||0),0)} 条记录`;
+      }else $('result-summary').textContent=state.mode==='reconcile'?`${totals.records??'—'} 条底表记录 · ${totals.changes??changes.length} 处变化 · ${totals.additions??changes.filter(c=>c.kind==='new').length} 条新增${totals.additions_skipped?` · ${totals.additions_skipped} 条新增未并入`:''} · ${totals.missing??report.missing?.length??0} 条未收到反馈`:`${groups.length} 个输出文件 · ${totals.records??totals.rows??groups.reduce((n,g)=>n+(Number(g.count)||0),0)} 条记录`;
       const warnings=[...(report.warnings||[])];if(report.retained_sheets?.length)warnings.push('同时保留依赖工作表：'+report.retained_sheets.map(s=>typeof s==='string'?s:s.name).join('、'));
       const messages=warningMessages(warnings),warningBox=$('result-warnings');warningBox.replaceChildren();warningBox.classList.toggle('hidden',!messages.length);
       if(messages.length){const heading=make('b','',`兼容与处理提示 · ${messages.length} 项${report.can_export?' · 可继续导出':''}`),list=make('ul');for(const message of messages)list.append(make('li','',message));warningBox.append(heading,list);}
@@ -433,6 +493,7 @@
       for(const issue of issues){
         const row=make('div','issue'+(issue.resolved?' solved':'')),label=make('div','',issue.message||issue.id);if(issue.location)label.append(make('div','hint',text(issue.location)));if(issue.append_blocked)label.append(make('div','hint',issue.append_blocked));row.append(label);
         if(issue.choices?.length){const select=make('select');select.setAttribute('aria-label',issue.message||issue.id);setOptions(select,[['',issue.blocking===false?'按默认方式继续':'选择处理方式'],...issue.choices.map(c=>[c.value,c.label])],issue.resolution??current().resolutions[issue.id]??'');select.onchange=()=>{const choice=issue.choices.find(c=>String(c.value)===select.value);if(choice)applyIssueChoice(issue,choice);};row.append(select);}else row.append(make('span','hint',issue.resolved?'已处理':issue.blocking===false?'可按默认方式继续':'请调整上方范围或字段对应后重试'));
+        if(issue.suggested_key){const sk=issue.suggested_key,fix=make('button','ghost key-fix','改用 '+(sk.title||('第 '+sk.field+' 列'))+' 作主键');fix.onclick=async()=>{fix.disabled=true;const s=current();s.keys=[sk.field];invalidate();renderRoles();renderToolbar();const c=config(activeSource());if(c)renderGrid(c.report);await previewResult();};row.append(fix);}
         panel.append(row);
       }
       $('result-samples').replaceChildren();$('result-changes').replaceChildren();
@@ -476,22 +537,22 @@
     }
     async function exportResult(outOverride) {
       const s=current();if(!s.result||!s.result.can_export||s.previewVersion!==s.version||state.busy||state.merging){notice('请先生成可导出的最新预览。',true);return false;}
-      const mode=state.mode,version=s.version,payload=clone(s.payload),stamp=new Date().toISOString().replace(/[-:]/g,'').slice(0,13).replace('T','_');
+      const mode=state.mode,version=s.version,payload=clone(s.payload),_d=new Date(Date.now()+8*3600e3),_p=n=>String(n).padStart(2,'0'),stamp=`${_d.getUTCFullYear()}${_p(_d.getUTCMonth()+1)}${_p(_d.getUTCDate())}_${_p(_d.getUTCHours())}${_p(_d.getUTCMinutes())}`;
       let out=outOverride;
       if(!out)out=mode==='split'?await toolbox.selectOutputFolder():await toolbox.saveDialog(`${mode==='merge'?'合并结果':'回填结果'}_${stamp}.xlsx`);
       if(!out)return false;if(version!==s.version||mode!==state.mode){notice('设置已发生变化，请重新预览。',true);return false;}
       payload[mode==='split'?'out_dir':'out']=out;
-      state.merging=true;$('progress-pane').classList.remove('hidden');$('progress-title').textContent='正在导出…';$('prog-file').textContent='';$('prog-count').textContent='';$('prog-bar').style.width='0%';
+      state.merging=true;$('progress-pane').classList.remove('hidden');syncModals();$('progress-title').textContent='正在导出…';$('prog-file').textContent='';$('prog-count').textContent='';$('prog-bar').style.width='0%';
       state.offProgress=toolbox.onProgress?.(m=>{if(state.disposed)return;$('prog-file').textContent=m.current||'';$('prog-count').textContent=m.total?`${m.file||0} / ${m.total}`:'';$('prog-bar').style.width=`${Math.min(99,Math.round((m.file||0)/Math.max(1,m.total||1)*100))}%`;});
       try{
         const report=await call({merge:'merge',split:'split',reconcile:'reconcile'}[mode],payload);
         if(report.exported===false||report.can_export===false){s.result=report;s.payload=null;s.previewVersion=-1;renderResult(report);throw Error('文件尚未导出，请处理报告中的问题后重新预览。');}
         if(!state.disposed)showDone(report,out);return true;
       }catch(error){if(!state.disposed)fail(error);return false;}
-      finally{state.offProgress?.();state.offProgress=null;state.merging=false;if(!state.disposed){$('progress-pane').classList.add('hidden');updateAction();}}
+      finally{state.offProgress?.();state.offProgress=null;state.merging=false;if(!state.disposed){$('progress-pane').classList.add('hidden');syncModals();updateAction();}}
     }
     function showDone(report,out) {
-      $('done-pane').classList.remove('hidden');$('done-icon').textContent=report.cancelled?'—':'✓';$('done-title').textContent=report.cancelled?'处理已取消':'导出完成';
+      $('done-pane').classList.remove('hidden');syncModals();$('done-icon').textContent=report.cancelled?'—':'✓';$('done-title').textContent=report.cancelled?'处理已取消':'导出完成';
       const totals=report.totals||{};$('done-stats').textContent=state.mode==='split'?`${report.files?.length??report.outputs?.length??current().result?.groups?.length??0} 个文件`:`${totals.rows_written??totals.records??current().result?.totals?.records??''} 条记录${report.changes_path?' · 已生成变更记录':''}`;
       const location=report.output||report.out||out,outputs=report.outputs||(state.mode==='split'?report.files?.filter(f=>typeof f==='object'&&f.path).map(f=>f.path):null)||[location];
       $('done-out').textContent=outputs.map(text).join('\n');$('done-out').style.whiteSpace='pre-wrap';$('report-detail').textContent=JSON.stringify(report,null,2);$('report-detail').classList.add('hidden');
@@ -519,7 +580,8 @@
     function restoreRoles(saved,fields,validateCells=true) {
       const s=current(),problems=[];
       const resolve=(field,role)=>{const match=uniqueField(field,fields);if(!match)problems.push(role+'：'+field.label);return match?.index;};
-      for(const [key,label]of[['keys','对应记录'],['updates','回填字段'],['compares','标红字段'],['outputFields','输出字段'],['filteredFields','额外筛选结果字段']])s[key]=(saved[key]||[]).map(f=>resolve(f,label)).filter(v=>v!==undefined);
+      for(const [key,label]of[['keys','认记录（主键）'],['updates','允许修改的列'],['compares','改后标红的列'],['outputFields','输出字段'],['filteredFields','额外筛选结果字段']])s[key]=(saved[key]||[]).map(f=>resolve(f,label)).filter(v=>v!==undefined);
+      if(saved.groupField!=null){const g=resolve(saved.groupField,'单位列（分组）');s.groupField=g!==undefined?g:null;}
       s.group=[];
       for(const g of saved.group||[]){if(g.kind==='field'){const index=resolve(g.field,'拆分依据');if(index!==undefined)s.group.push({kind:'field',index});}else if(g.kind==='cell'){
         const cells=primaryConfig()?.report.cells||[],matches=cells.filter(c=>c.value!==null&&text(c.value)===text(g.expected));
@@ -608,16 +670,21 @@
     const page=(rowDelta,colDelta)=>{const source=activeSource(),cfg=config(source),s=current();if(!cfg)return;showSource(source,s.active.bucket,s.active.index,source.sheet,{row:Math.max(1,cfg.page.row+rowDelta),col:Math.max(1,cfg.page.col+colDelta)});};
     $('page-prev').onclick=()=>page(-80,0);$('page-next').onclick=()=>page(80,0);$('page-left').onclick=()=>page(0,-40);$('page-right').onclick=()=>page(0,40);
     $('jump-go').onclick=()=>{try{const destination=parseCell($('jump-cell').value),source=activeSource(),cfg=config(source),s=current();if(destination.row>cfg.report.max_row||destination.col>cfg.report.max_column)throw Error('这个坐标超出了工作表范围。');showSource(source,s.active.bucket,s.active.index,source.sheet,destination);}catch(error){fail(error);}};
-    $('group-by-sheet').onchange=()=>{const s=current();s.group=s.group.filter(g=>g.kind!=='sheet');if($('group-by-sheet').checked)s.group.push({kind:'sheet'});invalidate();renderRoles();};$('group-mode').onchange=()=>{current().groupMode=$('group-mode').value;invalidate();};$('blank-group').onchange=()=>{current().blankGroup=$('blank-group').value;invalidate();};
+    $('group-by-sheet').onchange=()=>{const s=current();s.group=s.group.filter(g=>g.kind!=='sheet');if($('group-by-sheet').checked)s.group.push({kind:'sheet'});invalidate();renderRoles();};$('group-mode').onchange=()=>{current().groupMode=$('group-mode').value;invalidate();};$('blank-group').onchange=()=>{current().blankGroup=$('blank-group').value;invalidate();};$('split-example-rows').onchange=()=>{current().options.exampleRows=$('split-example-rows').checked;invalidate();};$('split-retain-all').onchange=()=>{current().options.retainAll=$('split-retain-all').checked;invalidate();};
     $('add-filter').onclick=()=>{current().filters.push({field:null,op:'equals',value:''});invalidate();renderFilters();};
     $('add-output-filter').onclick=()=>{current().outputFilters.push({field:null,op:'equals',value:''});invalidate();renderFilters();};$('filtered-enabled').onchange=()=>{current().filteredEnabled=$('filtered-enabled').checked;if(!current().filteredEnabled&&current().role==='filteredFields')current().role='keys';invalidate();renderFilters();renderRoles();};
     root.querySelectorAll('[name="merge-output"]').forEach(input=>input.onchange=()=>{current().options.mode=input.value;invalidate();recommend();});
     for(const [id,key]of [['opt-shape','shape'],['opt-align','align'],['opt-keywords','keywords']])$(id).addEventListener(id==='opt-keywords'?'input':'change',()=>{current().options[key]=$(id).value;invalidate();});
+      $('opt-fill-ratio').addEventListener('input',()=>{const v=Number($('opt-fill-ratio').value);current().options.minFillRatio=Number.isFinite(v)&&v>=0?v:20;invalidate();});
     for(const [id,key]of [['opt-hidden','hidden'],['opt-source','source'],['opt-summary','removeSummary'],['opt-serial-strip','stripSerial'],['opt-serial-num','renumber'],['opt-title','title']])$(id).onchange=()=>{current().options[key]=$(id).checked;invalidate();recommend();};
     $('opt-template').onchange=()=>{current().options.templateIndex=Number($('opt-template').value);current().options.templateSheet=null;renderFiles();clearMappings();invalidate();renderMapping();};
     $('opt-template-sheet').onchange=()=>{current().options.templateSheet=$('opt-template-sheet').value;clearMappings();invalidate();renderMapping();};
     $('mapping-reviewed').onclick=()=>{const cfg=config(activeSource());if(!cfg)return;cfg.mapping_review=false;invalidate('已采用当前字段对应，请重新预览核对。');renderMapping();};
-    $('btn-preview').onclick=previewResult;$('btn-export').onclick=()=>exportResult();$('btn-cancel').onclick=()=>{toolbox.cancel?.();$('progress-title').textContent='正在停止…';};$('btn-again').onclick=()=>{$('done-pane').classList.add('hidden');};$('btn-report').onclick=()=>$('report-detail').classList.toggle('hidden');
+    $('zoom-out').onclick=()=>{gridZoom.mode='manual';gridZoom.scale=Math.max(GRID_MIN_ZOOM,(gridZoom.scale||1)-0.1);applyGridZoom();};
+    $('zoom-in').onclick=()=>{gridZoom.mode='manual';gridZoom.scale=Math.min(2,(gridZoom.scale||1)+0.1);applyGridZoom();};
+    $('zoom-fit').onclick=()=>{gridZoom.mode='fit';applyGridZoom();};
+    window.addEventListener('resize',()=>{if(gridZoom.mode==='fit')applyGridZoom();});
+    $('btn-preview').onclick=previewResult;$('btn-export').onclick=()=>exportResult();$('btn-cancel').onclick=()=>{toolbox.cancel?.();$('progress-title').textContent='正在停止…';};$('btn-again').onclick=()=>{$('done-pane').classList.add('hidden');syncModals();};$('btn-report').onclick=()=>$('report-detail').classList.toggle('hidden');
     $('scheme-save').onclick=saveScheme;$('scheme-apply').onclick=applyScheme;$('scheme-delete').onclick=()=>{const id=$('scheme-select').value;if(!id)return;writeSchemes(readSchemes().filter(s=>s.id!==id));renderSchemes();notice('已删除所选方案。');};
     const drop=$('dropzone');drop.ondragover=e=>{if([...e.dataTransfer.types].includes('Files')){e.preventDefault();drop.classList.add('dragover');}};drop.ondragleave=()=>drop.classList.remove('dragover');drop.ondrop=async e=>{if(!e.dataTransfer.files.length)return;e.preventDefault();drop.classList.remove('dragover');await addFromPaths([...e.dataTransfer.files].map(file=>toolbox.pathForFile(file)).filter(Boolean));};
     dispose=()=>{state.disposed=true;state.gridRequest++;state.operationRequest++;state.offProgress?.();delete window.__emTest;delete window.__excelTest;};

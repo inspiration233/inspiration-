@@ -117,6 +117,48 @@ def _seq_labels(row):
     return inc >= 2
 
 
+def cross_table_shape(window_rows, window=HEADER_SCAN_WINDOW):
+    """交叉表形态探测: 有前置区(表头行≥2)且表头下首列是全互异纯文本字段标签。
+
+    返回表头行号(记录沿列的原生横向布局), 不是该形态返回 0。
+    纯转置表(字段标签自第1行沿A列)的表头行上方仍是"标签+连续数据"的字段行,
+    据此与本形态(上方是稀疏前置区)区分。
+    """
+    header_row = detect_header_row(window_rows, window).header_row
+    if header_row < 2:
+        return 0
+    for r in window_rows[:header_row - 1]:
+        if not r or r[0] in (None, ""):
+            continue
+        for c in range(1, len(r) - 1):
+            if r[c] not in (None, "") and r[c + 1] not in (None, ""):
+                return 0              # 前置区出现相邻数据格 → 实为纯转置表
+    labels = []
+    for row in window_rows[header_row:header_row + 12]:
+        v = row[0] if row else None
+        if v not in (None, ""):
+            labels.append(v)
+    if len(labels) < 4 or any(is_numberlike(v) for v in labels):
+        return 0
+    if len({normalize_name(v) for v in labels}) != len(labels):
+        return 0
+    return header_row
+
+
+def example_header_signal(window_rows, window=HEADER_SCAN_WINDOW):
+    """交叉表(记录沿列)信号：表头行含"例"前缀示例标记 + 表头下首列是全互异纯文本字段标签。
+
+    前置区+角标签+字段标签列+示例记录列是表单模板"横向配置表"的典型形态；
+    普通"姓名+数值列"纵向表首列虽也是文本，但表头无"例"标记，不受影响。
+    """
+    header_row = cross_table_shape(window_rows, window)
+    if not header_row:
+        return False
+    header = window_rows[header_row - 1]
+    return bool(header and any(isinstance(v, str) and v.strip().startswith("例")
+                               for v in header[1:]))
+
+
 def detect_orientation(window_rows, window=HEADER_SCAN_WINDOW, ranges=None):
     """多信号方向检测，返回 (orientation, confident)。
 
@@ -186,6 +228,12 @@ def detect_orientation(window_rows, window=HEADER_SCAN_WINDOW, ranges=None):
         net += 1
     elif _num_dir(t) > _num_dir(window_rows):
         net -= 1
+    # 4) 交叉表示例标记: "例"前缀表头+前置区+首列互异文本标签 = 模板示例记录列,
+    #    记录沿列方向。此组合与"姓名+数值列"纵向表无结构差异,靠"例"标记定向;
+    #    纯转置表(表头上方仍有相邻数据行)与无"例"表头的纵向表不受影响。
+    #    数字分布/纯度信号随数据密度波动, 不参与本形态裁决。
+    if example_header_signal(window_rows, window):
+        return "horizontal", True
 
     if net >= 2:
         return "vertical", True

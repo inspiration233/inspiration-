@@ -207,7 +207,7 @@ def test_unrecognized_month_and_formula_group_are_actionable(tmp_path):
     assert any(x["code"] == "formula_group" for x in split_preview(payload)["issues"])
 
 
-def test_merged_label_requires_explicit_confirmation_and_clips_anchor(tmp_path):
+def test_merged_text_label_auto_shared_and_clips_anchor(tmp_path):
     wb = Workbook(); ws = wb.active
     ws.append(["分类", "单位", "事项"])
     ws.append(["共享标签", "乙", "事项一"])
@@ -217,9 +217,10 @@ def test_merged_label_requires_explicit_confirmation_and_clips_anchor(tmp_path):
     ws["A2"].fill = PatternFill("solid", fgColor="FFCCEEFF")
     payload = save(tmp_path, wb, group_fields=[dict(kind="field", index=2)])
     preview = split_preview(payload)
-    assert not preview["can_export"]
-    assert {x["code"] for x in preview["issues"]} == {"merged_record"}
-    payload = apply_choices(payload, preview, "merged_record")
+    # 文本合并区跨记录 = 共用标签, 自动处理不再询问
+    assert preview["can_export"]
+    assert not preview["issues"]
+    assert any("共用标签" in w for w in preview["warnings"])
     result = split_export(payload)
     actual = result_book(result, "甲").active
     assert actual["A2"].value == "共享标签"
@@ -249,9 +250,9 @@ def test_total_population_needs_scope_decision(tmp_path, formula):
                    data_start=2, data_end=4, field_start=1, field_end=2),
                    group_fields=[dict(kind="field", index=1)], allow_warnings=True)
     preview = split_preview(payload)
-    assert not preview["can_export"]
-    assert {x["code"] for x in preview["issues"]} == {"formula_scope"}
-    payload = apply_choices(payload, preview, "formula_scope")
+    # 引用范围随拆分自动按本组保留记录计算, 不再需要决策
+    assert preview["can_export"] and not preview["issues"]
+    assert any("重新计算" in w for w in preview["warnings"])
     actual = result_book(split_export(payload), "甲")
     expected = "=SUM(B2:B3)" if formula == "=SUM(B2:B4)" else formula
     assert actual.active["B4"].value == expected
@@ -495,9 +496,9 @@ def test_content_outside_fields_is_not_deleted_without_decision(tmp_path):
                    data_start=2, data_end=3, field_start=1, field_end=2),
                    group_fields=[dict(kind="field", index=1)])
     preview = split_preview(payload)
-    assert any(x["code"] == "outside_fields" for x in preview["issues"])
-    payload = apply_choices(payload, preview, "outside_fields")
-    assert split_preview(payload)["can_export"]
+    # 范围外内容随整行自动保留, 不再需要确认
+    assert preview["can_export"] and not preview["issues"]
+    assert any("随整行/列" in w for w in preview["warnings"])
 
 
 def test_plain_excel_table_is_kept_and_ref_adjusted(tmp_path):

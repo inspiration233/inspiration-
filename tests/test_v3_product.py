@@ -32,7 +32,8 @@ def values(ws, start):
 
 
 def red(cell):
-    return cell.font.color and cell.font.color.type == "rgb" and cell.font.color.rgb[-6:] == "FF0000"
+    fill = cell.fill
+    return bool(fill and fill.fill_type == "solid" and str(fill.fgColor.rgb or "")[-6:] == "FF0000")
 
 
 @pytest.mark.parametrize("path", BOOKS, ids=lambda p: f"{p.parent.name}/{p.name}")
@@ -88,11 +89,9 @@ def test_w1_full_feedback_and_june_output(tmp_path):
                "out": str(tmp_path / "全年.xlsx")}
     digest = hashlib.sha256(Path(payload["path"]).read_bytes()).hexdigest()
     report = workflow_preview(payload)
-    assert not report["can_export"]
-    addition = next(i for i in report["issues"] if i["kind"] == "addition")
-    payload["resolutions"] = {addition["id"]: "append"}
-    ready = workflow_preview(payload)
-    assert ready["can_export"], ready["issues"]
+    # 新记录默认自动追加, 不再需要确认
+    assert report["can_export"], report["issues"]
+    ready = report
     assert len(ready["missing"]) == 5
     assert any(c["key"] == ["T002"] and c["after"] == 25 and c["marked"] for c in ready["changes"])
     assert any(c["key"] == ["T005"] and c["after"] == "已完成" and not c["marked"] for c in ready["changes"])
@@ -136,9 +135,8 @@ def test_w2_select_january_columns_and_confirm_group_total(tmp_path):
                "out_dir": str(tmp_path)}
     report = split_preview(payload)
     assert [g["count"] for g in report["groups"]] == [4, 4, 4]
-    assert not report["can_export"]  # footer originally totals all three departments
-    assert all(i["code"] == "formula_scope" for i in report["issues"])
-    payload["resolutions"] = {i["id"]: "group_scope" for i in report["issues"]}
+    # 合计口径自动按本组保留记录计算, 不再需要确认
+    assert report["can_export"] and not report["issues"]
     result = split_export(payload)
     financial = load_workbook(next(f["path"] for f in result["files"] if f["label"] == "财务部"))
     ws = financial.active
@@ -174,10 +172,8 @@ def test_c32_changed_name_unit_and_month_are_matched_by_selected_id(tmp_path):
 def test_c33_addition_requires_confirmation_and_missing_is_kept(tmp_path):
     payload = feedback_case("C33", tmp_path)
     before = reconcile_preview(payload)
-    assert not before["can_export"]
+    assert before["can_export"]          # 新记录默认自动追加
     assert [r["key"] for r in before["missing"]] == [["B003"]]
-    issue = next(i for i in before["issues"] if i["kind"] == "addition")
-    payload["resolutions"] = {issue["id"]: "append"}
     result = reconcile_export(payload)
     assert result["exported"]
     actual = load_workbook(payload["out"])

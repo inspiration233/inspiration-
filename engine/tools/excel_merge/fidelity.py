@@ -167,11 +167,11 @@ class FidelityContent:
         self.src = src
         self.kind = Path(src.path).suffix.lower()
         self.full = self.kind == ".xlsx"
-        self.wb_f = self.wb_v = None
+        self.wb_f = None
+        self._wb_v = None            # 缓存值版惰性加载: 无公式的文件用不到
         if self.full:
             try:
                 self.wb_f = load_workbook(src.path, data_only=False)
-                self.wb_v = load_workbook(src.path, data_only=True)
             except Exception:
                 self.wb_f = None
 
@@ -183,10 +183,14 @@ class FidelityContent:
         return self.wb_f[self.src.sheet_name] if self.wb_f else None
 
     def sheet_v(self):
-        return self.wb_v[self.src.sheet_name] if self.wb_v else None
+        if self.wb_f is None:
+            return None
+        if self._wb_v is None:
+            self._wb_v = load_workbook(self.src.path, data_only=True)
+        return self._wb_v[self.src.sheet_name]
 
     def close(self):
-        for wb in (self.wb_f, self.wb_v):
+        for wb in (self.wb_f, self._wb_v):
             try:
                 wb.close()
             except Exception:
@@ -274,9 +278,169 @@ def _extract_meta(pre_rows):
     return out
 
 
+def merge_group_cross(book, group, options, template_index, report, cancel=None,
+                      base_name="总表"):
+    """原生交叉表组合并: 保持横向布局, 各来源的记录列按首列字段标签对齐后追加到右侧。
+
+    首份(版式参考)原样写出前置区/表头/标签列/记录列; 后续来源只追加记录列,
+    "例"前缀示例列与已拼入列完全相同时不再重复(模板示例只保留一份)。
+    """
+    totals = report["totals"]
+    contents = [FidelityContent(s) for s in group]
+    try:
+        unavailable = [s.display for s, c in zip(group, contents) if not c.available]
+        if unavailable:
+            raise ValueError("无法读取原生工作表内容：" + "、".join(unavailable))
+        if cancel and cancel():
+            raise Cancelled("横向拼接已取消")
+        t_content = contents[template_index]
+        t_src = group[template_index]
+        t_st = t_src.structure
+        ws = book.page(base_name)
+
+        def grid_params(content):
+            st = content.src.structure
+            sh = content.sheet()
+            end = st.data_end_row if st.data_end_row and st.data_end_row >= st.header_row else sh.max_row
+            last_col = max((c for c in range(2, sh.max_column + 1)
+                            if sh.cell(st.header_row, c).value not in (None, "")),
+                           default=1)
+            return st, sh, min(end, sh.max_row), last_col
+
+        # ---- 1) 版式参考原样写出(值+样式+注释+合并+列宽+行高+冻结) ----
+        t_st, t_sheet, t_end, t_last = grid_params(t_content)
+        for r in range(1, t_end + 1):
+            for c in range(1, t_last + 1):
+                cell = t_sheet.cell(r, c)
+                out = ws.cell(r, c)
+                if cell.value is not None:
+                    out.value = cell.value
+                if cell.has_style:
+                    _copy_cell_style(out, cell)
+                if cell.comment:
+                    out.comment = Comment(cell.comment.text, cell.comment.author)
+            rd = t_sheet.row_dimensions.get(r)
+            if rd is not None and rd.height is not None:
+                ws.row_dimensions[r].height = rd.height
+        for mg in getattr(t_st, "all_merges", []):
+            # 前置区合并按原跨度原样保留(不因记录列区域较窄而截断; 也不向右扩展,
+            # 与用户预期一致: 标题合并保持模板原宽度)
+            if mg.min_row >= 1 and mg.max_row <= t_end:
+                try:
+                    ws.merge_cells(start_column=mg.min_col, start_row=mg.min_row,
+                                   end_column=mg.max_col, end_row=mg.max_row)
+                except Exception:
+                    pass
+        for c, w in (t_st.col_widths or {}).items():
+            if isinstance(c, int) and 1 <= c <= t_last and w:
+                ws.column_dimensions[get_column_letter(c)].width = w
+        freeze = t_sheet.freeze_panes
+        if freeze and str(freeze) != "A1":
+            ws.freeze_panes = freeze
+
+        # 标签(首列)行号映射 + 已拼入记录列登记
+        data_start = t_st.header_row + t_st.height
+        label_row = {}
+        for r in range(data_start, t_end + 1):
+            v = t_sheet.cell(r, 1).value
+            if v not in (None, ""):
+                label_row.setdefault(str(v).strip(), r)
+        known_cols = []          # (名称, {标签: 值})
+        for c in range(2, t_last + 1):
+            name = t_sheet.cell(t_st.header_row, c).value
+            known_cols.append((name, {lbl: t_sheet.cell(r, c).value
+                                      for lbl, r in label_row.items()}))
+        next_col = t_last + 1
+        appended = 0
+
+        # ---- 2) 后续来源: 记录列右拼 ----
+        for src, cont in zip(group, contents):
+            if cont is t_content:
+                continue
+            st = src.structure
+            if st.pre_rows and t_st.pre_rows and st.pre_rows != t_st.pre_rows:
+                report["warnings"].append(
+                    f"「{src.display}」前置区与首份不同，横向拼接已采用首份的标题与前置区。")
+            sheet = cont.sheet()
+            _, _, s_end, s_last = grid_params(cont)
+            s_labels = {}
+            for r in range(st.header_row + st.height, s_end + 1):
+                v = sheet.cell(r, 1).value
+                if v not in (None, ""):
+                    s_labels.setdefault(str(v).strip(), r)
+            missing = [lbl for lbl in s_labels if lbl not in label_row]
+            if missing:
+                report["warnings"].append(
+                    f"「{src.display}」字段 {'、'.join(missing[:5])}"
+                    f"{'等' if len(missing) > 5 else ''} 在首份表中不存在，对应内容未拼接。")
+            col_map = {}                     # 源列 → 输出列
+            for c in range(2, s_last + 1):
+                name = sheet.cell(st.header_row, c).value
+                values = {lbl: sheet.cell(r, c).value for lbl, r in s_labels.items()}
+                norm = str(name).strip() if name is not None else ""
+                if (norm.startswith("例")
+                        and any(k == name and kv == values for k, kv in known_cols)):
+                    continue                  # 模板示例列与首份相同 → 不重复
+                col_map[c] = next_col
+                hcell = sheet.cell(st.header_row, c)
+                out = ws.cell(st.header_row, next_col)
+                if hcell.value is not None:
+                    out.value = hcell.value
+                if hcell.has_style:
+                    _copy_cell_style(out, hcell)
+                if hcell.comment:
+                    out.comment = Comment(hcell.comment.text, hcell.comment.author)
+                for lbl, src_row in s_labels.items():
+                    if lbl not in label_row:
+                        continue
+                    cell = sheet.cell(src_row, c)
+                    out = ws.cell(label_row[lbl], next_col)
+                    if cell.data_type == "f":
+                        vcell = cont.sheet_v().cell(src_row, c) if cont.sheet_v() else None
+                        out.value = vcell.value if vcell is not None else None
+                        totals["formulas_to_value"] = totals.get("formulas_to_value", 0) + 1
+                    elif cell.value is not None:
+                        out.value = cell.value
+                    if cell.has_style:
+                        _copy_cell_style(out, cell)
+                    if cell.comment:
+                        out.comment = Comment(cell.comment.text, cell.comment.author)
+                w = (st.col_widths or {}).get(c)
+                if w:
+                    ws.column_dimensions[get_column_letter(next_col)].width = w
+                known_cols.append((name, values))
+                next_col += 1
+                appended += 1
+            # 列内/跨列合并: 经列映射平移; 含未拼入列的合并跳过
+            for mg in getattr(st, "all_merges", []):
+                cols = list(range(mg.min_col, mg.max_col + 1))
+                if (mg.min_col >= 2 and mg.max_col <= s_last
+                        and mg.min_row >= st.header_row and all(c2 in col_map for c2 in cols)):
+                    try:
+                        ws.merge_cells(start_column=col_map[mg.min_col],
+                                       start_row=mg.min_row,
+                                       end_column=col_map[mg.max_col],
+                                       end_row=min(mg.max_row, t_end))
+                    except Exception:
+                        pass
+        for item in report.get("groups", []):
+            if item.get("sheet", item.get("label")) == base_name:
+                item["shape"] = "cross"
+                item["count"] = (t_last - 1) + appended
+        return report
+    finally:
+        for c in contents:
+            c.close()
+
+
 def merge_group_fidelity(book, group, options, template_index, report,
                          progress=None, cancel=None, base_name="总表",
                          shape="stack"):
+    # 同组=同模板: 任一成员为交叉表即全组横向拼接(个别成员记录太少
+    # 导致方向信号不足时, 按组内多数/已识别方向统一处理)
+    if any(getattr(s.structure, "native_cross", False) for s in group):
+        return merge_group_cross(book, group, options, template_index, report,
+                                 cancel=cancel, base_name=base_name)
     totals = report["totals"]
     template = group[template_index]
     src_list = [group[0]] if options.mode == "workbook" else group
@@ -397,6 +561,11 @@ def merge_group_fidelity(book, group, options, template_index, report,
 
     serial_idx = next((i for i, k in enumerate(out_keys) if k in ("序号", "编号")), None) \
         if options.renumber_serial else None
+    # 示例行识别列: "序号/编号"表头(无则不识别, 避免误伤无序号表的"例"字开头数据);
+    # 拼接式(append)按语义完整还原各源, 不做示例行去重
+    example_idx = next((i for i, k in enumerate(out_keys) if k in ("序号", "编号")), None) \
+        if shape != "append" else None
+    examples_kept = False
     serial_counter = 0
     rows_total = 0
 
@@ -599,15 +768,21 @@ def merge_group_fidelity(book, group, options, template_index, report,
         col_map = {sc + field_offset + 1: oc + 1 for sc, oc in inv_map.items()}
 
         def _record_cells():
-            """产出 [(源行号, cells_f, row_v)]; 横向表自动转置。"""
+            """产出 [(源行号, cells_f, row_v)]; 横向表自动转置。
+
+            缓存值版(row_v)仅在存在公式单元格时才加载——无公式的文件
+            两版取值完全相同, 可省一次整簿解析。
+            """
             if not cont.full:
                 return [(row_no, cells, None)
                         for row_no, cells in src.iter_data_rows()]
             sheet_f = cont.sheet()
-            sheet_v = cont.sheet_v()
             if sst.orientation == "horizontal":
                 grid_f = [list(r) for r in sheet_f.iter_rows()]
-                grid_v = [list(r) for r in sheet_v.iter_rows()] if sheet_v else []
+                has_formula = any(c is not None and c.data_type == "f"
+                                  for row in grid_f for c in row)
+                grid_v = ([list(r) for r in cont.sheet_v().iter_rows()]
+                          if has_formula else [])
                 ncols = max((len(r) for r in grid_f), default=0)
                 recs = []
                 for c in range(dstart - 1, min(ncols, getattr(sst, "data_end", ncols))):
@@ -622,14 +797,22 @@ def merge_group_fidelity(book, group, options, template_index, report,
                 return recs
             max_row = getattr(sst, "data_end", sheet_f.max_row)
             max_col = getattr(sst, "field_end", sheet_f.max_column)
-            rows_v_iter = sheet_v.iter_rows(min_row=dstart, max_row=max_row,
-                                           min_col=field_offset + 1, max_col=max_col) if sheet_v else None
+            rows_f = [list(r) for r in sheet_f.iter_rows(
+                min_row=dstart, max_row=max_row,
+                min_col=field_offset + 1, max_col=max_col)]
+            if not any(c is not None and c.data_type == "f"
+                       for cells in rows_f for c in cells):
+                return [(cells[0].row, cells, None) for cells in rows_f if cells]
+            sv = cont.sheet_v()
+            rows_v = ([list(r) for r in sv.iter_rows(
+                min_row=dstart, max_row=max_row,
+                min_col=field_offset + 1, max_col=max_col)] if sv else [])
             recs = []
-            for row_f in sheet_f.iter_rows(min_row=dstart, max_row=max_row,
-                                           min_col=field_offset + 1, max_col=max_col):
-                row_v = next(rows_v_iter, None) if rows_v_iter else None
-                if row_f:
-                    recs.append((row_f[0].row, list(row_f), row_v))
+            for i, cells in enumerate(rows_f):
+                if not cells:
+                    continue
+                row_v = rows_v[i] if rows_v and i < len(rows_v) else None
+                recs.append((cells[0].row, cells, row_v))
             return recs
 
         def _vals(cells_f, row_v):
@@ -645,10 +828,29 @@ def merge_group_fidelity(book, group, options, template_index, report,
             return out
 
         keep = []
+        skipped_examples = 0
+        has_example = False
         for row_no, cells_f, row_v in _record_cells():
             if _skip_row(_vals(cells_f, row_v), options, totals):
                 continue
+            if example_idx is not None:
+                si = mapping[example_idx] if example_idx < len(mapping) else None
+                sv = (getattr(cells_f[si], "value", None)
+                      if si is not None and si < len(cells_f) else None)
+                # "例"开头序号 = 模板示例行; 后续来源的示例不再重复拼入
+                if isinstance(sv, str) and sv.strip().startswith("例"):
+                    if examples_kept:
+                        skipped_examples += 1
+                        continue
+                    has_example = True
             keep.append((row_no, cells_f, row_v))
+        if skipped_examples:
+            report["warnings"].append(
+                f"「{src.display}」的示例行（“例”开头序号，{skipped_examples} 行）已跳过，"
+                "仅保留首份来源的示例行。")
+            totals["example_rows_skipped"] = totals.get("example_rows_skipped", 0) + skipped_examples
+        if has_example:
+            examples_kept = True
         if cancel and cancel():
             raise KeyboardInterrupt("cancelled")
         row_map = {}
@@ -663,12 +865,16 @@ def merge_group_fidelity(book, group, options, template_index, report,
             _write_header_at(ws, at, src)
             hdr_start = at
         cursor = ws.max_row if shape == "append" else block_base + rows_total
+        # 行数上限判断: ws.max_row 每次访问都对全表单元格坐标求 max(O(表大小)),
+        # 放在行循环里会随行数平方级变慢; 映射循环内不写格, 取一次快照等价
+        written = ws.max_row
         for row_no, _f, _v in keep:
-            if ws.max_row >= XLSX_MAX_ROWS - 2:
+            if written >= XLSX_MAX_ROWS - 2:
                 _new_page()
                 report["warnings"].append(
                     f"「{base_name}」超出单页行数上限，已自动续写新页")
                 block_base = ws.max_row
+                written = block_base
                 cursor = block_base
             cursor += 1
             row_map[row_no] = (page_no, cursor)
@@ -849,7 +1055,8 @@ def merge_group_fidelity(book, group, options, template_index, report,
             v = ws.cell(r, serial_idx + 1).value
             if v is None or v == "":
                 continue
-            if isinstance(v, (int, float)) or (isinstance(v, str) and v.strip().isdigit()):
+            is_serial_formula = isinstance(v, str) and v.strip().startswith("=")
+            if isinstance(v, (int, float)) or (isinstance(v, str) and v.strip().isdigit())                     or is_serial_formula:
                 counter += 1
                 ws.cell(r, serial_idx + 1).value = counter
             # 文本序号(如"例1")保留原值,不计数
