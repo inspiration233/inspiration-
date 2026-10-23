@@ -31,8 +31,7 @@ jobs:
           ls -la dist-engine/current
       - name: 自检引擎二进制(协议应答)
         run: |
-          out=$(printf '{"op":"merge","payload":{}}
-' | ./dist-engine/current/engine-sidecar | head -1)
+          out=$(echo '{"op":"merge","payload":{}}' | ./dist-engine/current/engine-sidecar | head -1)
           [[ "$out" == *'"evt"'* ]] || { echo "引擎二进制无协议应答: $out"; exit 1; }
       - name: 安装前端依赖
         working-directory: app
