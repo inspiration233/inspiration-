@@ -10,6 +10,56 @@
     "test:ui": "electron . --workbench-test"
   },
   "devDependencies": {
-    "electron": "^33.2.0"
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.inspiration.teamtoolbox",
+    "productName": "工具箱",
+    "directories": {
+      "output": "../release"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "shell/**",
+      "shared/**",
+      "tools/**",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../dist-engine/current",
+        "to": "engine-sidecar"
+      }
+    ],
+    "asarUnpack": [],
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
+      "category": "public.app-category.productivity",
+      "identity": null
+    },
+    "win": {
+      "target": [
+        "nsis",
+        "zip"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "artifactName": "工具箱-Setup-${version}.${ext}"
+    },
+    "dmg": {
+      "artifactName": "工具箱-${version}-${arch}.${ext}"
+    }
   }
 }

@@ -55,7 +55,15 @@ let waiting = null;                                      // 当前等待应答�
 // ---------------------------------------------------------------- sidecar
 
 function startSidecar() {
-  const processHandle = spawn(PYTHON, ['-m', 'engine.sidecar'], {
+  // 打包版优先使用随应用分发的引擎二进制(resources/engine-sidecar);
+  // 开发版回退 python -m engine.sidecar
+  let command = PYTHON, args = ['-m', 'engine.sidecar'];
+  if (app.isPackaged) {
+    const name = process.platform === 'win32' ? 'engine-sidecar.exe' : 'engine-sidecar';
+    const binary = path.join(process.resourcesPath, 'engine-sidecar', name);
+    try { if (fs.existsSync(binary)) { command = binary; args = []; } } catch { /* 回退 python */ }
+  }
+  const processHandle = spawn(command, args, {
     cwd: ROOT,
     env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
     stdio: ['pipe', 'pipe', 'pipe'],

@@ -1,0 +1,80 @@
+name: build
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  mac:
+    name: mac ${{ matrix.arch }}（引擎测试 + dmg）
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-14, arch: arm64, tag: AppleSilicon }
+          - { os: macos-13, arch: x64, tag: Intel }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.11' }
+      - name: 安装引擎依赖
+        run: pip install -r requirements.txt pyinstaller
+      - name: 引擎全量测试（顺带完成 mac 冒烟）
+        run: python -m pytest tests -q
+      - name: 打包引擎二进制
+        run: |
+          pyinstaller --clean --onefile --name engine-sidecar \
+            --distpath dist-engine/current --workpath build-py --specpath build-py \
+            --hidden-import xlrd --hidden-import openpyxl \
+            engine/sidecar_entry.py
+          ls -la dist-engine/current
+      - name: 安装前端依赖
+        working-directory: app
+        run: npm install --no-audit --no-fund
+      - name: 打包 dmg（不签名）
+        working-directory: app
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npx electron-builder --mac dmg --${{ matrix.arch }} --publish never
+      - name: 上传 dmg
+        uses: actions/upload-artifact@v4
+        with:
+          name: 工具箱-mac-${{ matrix.tag }}-${{ matrix.arch }}
+          path: release/*.dmg
+          if-no-files-found: error
+
+  windows:
+    name: windows x64（引擎测试 + 安装包）
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.11' }
+      - name: 安装引擎依赖
+        run: pip install -r requirements.txt pyinstaller
+      - name: 引擎全量测试
+        run: python -m pytest tests -q
+      - name: 打包引擎二进制
+        run: |
+          pyinstaller --clean --onefile --name engine-sidecar `
+            --distpath dist-engine/current --workpath build-py --specpath build-py `
+            --hidden-import xlrd --hidden-import openpyxl `
+            engine/sidecar_entry.py
+          Get-ChildItem dist-engine/current
+      - name: 安装前端依赖
+        working-directory: app
+        run: npm install --no-audit --no-fund
+      - name: 打包安装包（不签名）
+        working-directory: app
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npx electron-builder --win nsis zip --x64 --publish never
+      - name: 上传安装包
+        uses: actions/upload-artifact@v4
+        with:
+          name: 工具箱-windows-x64
+          path: |
+            release/*.exe
+            release/*.zip
+          if-no-files-found: error
