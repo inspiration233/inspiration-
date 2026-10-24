@@ -190,6 +190,15 @@ def merge(paths, out_path, options=None, progress=None, cancel=None):
             template = next((s for s in sources if Path(s.path).resolve() == resolved_template
                              and s.sheet_name == options.template_sheet), None)
             if template is None:
+                if not sources:
+                    # 没有任何可用来源: 真正的原因几乎总是"表里没有数据", 不能让人
+                    # 去检查模板设置
+                    skipped_names = [entry.get("sheet") for group in report.get("groups", [])
+                                     for entry in group.get("sheets", []) if entry.get("skipped")]
+                    detail = "、".join(str(n) for n in skipped_names[:4]) if skipped_names else "所有工作表"
+                    raise ValueError(
+                        f"没有可合并的数据：{detail} 整表为空（只有格式没有内容）。"
+                        "请打开文件确认里面是否有数据；若数据在别的文件/工作表，请改选那份。")
                 raise ValueError("所选版式参考表不在合并来源中，请重新选择")
             options.template_index = sources.index(template)
         from .selection import apply_field_maps
