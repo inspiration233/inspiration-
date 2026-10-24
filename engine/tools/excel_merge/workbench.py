@@ -63,14 +63,37 @@ def options_for(payload):
     return Options(**{k: v for k, v in defaults.items() if k in allowed})
 
 
+def _shell_only_files(paths):
+    """整表皆空(只有格式骨架)的文件: 这些文件的兼容性警告没有意义——
+    它们的内容根本不会进入输出, 提"公式缓存/图表/主题"只会误导。"""
+    from . import reader as _reader
+    shells = set()
+    for raw in paths:
+        try:
+            tables, rd = _reader.list_tables(raw, True)
+        except Exception:
+            continue                     # 读取失败由后续流程报错
+        try:
+            srcs = [src for src, _why in tables if src is not None]
+            visible = [src for src in srcs if src.structure.sheet_name]
+            if srcs and all(src.structure.empty for src in srcs):
+                shells.add(Path(raw).name)
+        finally:
+            rd.close()
+    return shells
+
+
 def _preflight(payload, options):
     issues, warnings = [], []
     paths = payload.get("paths") or []
     if not paths:
         return [{"id": "no-files", "message": "请先添加文件"}], warnings
     if options.style == "fidelity" and options.mode != "workbook":
+        shells = _shell_only_files(paths)
         for raw in paths:
             path = Path(raw)
+            if path.name in shells:
+                continue                 # 空壳文件的兼容警告全部抑制
             if path.suffix.lower() != ".xlsx":
                 warnings.append(f"{path.name}：原格式无法完整携带 Excel 原生属性；内容可合并，需要保留版式请先另存为 .xlsx。")
                 continue
@@ -146,8 +169,11 @@ def _generate_impl(payload, out, cancel=None, progress=None):
         if totals.get(key):
             warnings.append(f"{title}有 {totals[key]} 项未能完整保留；已继续处理单元格内容，请核对对应显示或输入规则。")
     for item in report.get("files", []):
-        if item.get("status") == "failed":
-            issues.append({"id": "file:" + item["path"], "message": f"{item['path']}：{item.get('reason', '读取失败')}"})
+        status = item.get("status") if isinstance(item, dict) else getattr(item, "status", None)
+        if status == "failed":
+            detail = item.get("path") if isinstance(item, dict) else getattr(item, "path", "")
+            reason = (item.get("reason") if isinstance(item, dict) else getattr(item, "reason", "")) or "读取失败"
+            issues.append({"id": f"file:{detail}", "message": f"{detail}：{reason}"})
     if not Path(out).is_file() and not issues:
         issues.append({"id": "empty", "message": "没有可合并的数据"})
     groups = []
