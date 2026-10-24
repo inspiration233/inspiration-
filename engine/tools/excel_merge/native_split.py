@@ -833,6 +833,12 @@ def _transform_rules(ws, mapping, context):
                 if mapped:
                     ws.conditional_formatting.add(mapped, new)
                 continue
+            # 已断的条件格式(公式含#REF!)是原表遗留的坏规则,丢弃无损失,警告即可
+            if any('#REF' in str(f) for f in (rule.formula or []) if f):
+                ctx = dict(context, location=f"{ws.title}!条件格式{number + 1}:{area.sqref}")
+                issues.warn(f"条件格式 {ctx['location']} 的引用已断(#REF!),"
+                            "该规则来自原表的遗留问题,已丢弃;请在原表中修复后重试以保留此格式。")
+                continue
             for rng in ranges:
                 for mapped, anchor in mapping.rects(str(rng), split=True):
                     new = deepcopy(rule)
