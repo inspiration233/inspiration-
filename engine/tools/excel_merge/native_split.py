@@ -691,8 +691,10 @@ def _rewrite(formula, owner, target, mapping, wb, retained, issues, location, gr
     for token in tokens:
         value = token.value
         if token.type == "OPERAND" and token.subtype == "ERROR" and value == "#REF!":
-            issues.add("broken_reference", f"公式 {location} 含 #REF!（引用已断，该格在 Excel 里也显示 #REF!）。"
-                       "请先在原表修复或删除这个公式后重试。", location, group)
+            # 原表遗留的坏公式: 保留原样输出(输出也显示#REF!,与原表一致),警告即可。
+            # 业务数据自带脏数据很常见,阻断等于要求用户先修上游——不现实。
+            issues.warn(f"公式 {location} 含 #REF!（引用已断），已按原样保留；"
+                        "如需修复请在原表中处理后重新导入。")
         if token.type == "OPERAND" and token.subtype == "RANGE":
             sheet, ref, prefix = _qualified(value, owner)
             if not prefix and ref in names:
