@@ -115,6 +115,7 @@ for target,headers,row in [(sys.argv[10],['ID','Plan','Done'],['R001',10,6]),(sy
     assert(await T.applyScheme(),'原结构方案恢复失败');
 
     await T.switchMode('reconcile');
+    T.current().resultForm='direct';   // 本流程断言直接替换布局; 对比输出有引擎专测
     await T.addPaths({files:[P.source]});
     document.querySelector('#header-range').value='A4:G4';
     document.querySelector('#data-range').value='A5:G16';

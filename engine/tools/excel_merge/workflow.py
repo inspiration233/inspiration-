@@ -77,7 +77,8 @@ def workflow_preview(payload, cancel=None, progress=None):
         return report
     with _temporary_directory(prefix="excel-feedback-preview-") as temp:
         updated = Path(temp) / "updated.xlsx"
-        materialized = reconcile_export({**payload, "out": str(updated)}, cancel, progress)
+        # 筛选结果从"直接替换"形态计算(对比原值行对筛选无意义且会扰乱结构识别)
+        materialized = reconcile_export({**payload, "out": str(updated), "result_form": "direct"}, cancel, progress)
         if not materialized.get("exported"):
             return materialized
         filtered = _optional_filtered_preview(split_preview(_filtered_payload(payload, updated, report)))
@@ -106,7 +107,16 @@ def workflow_export(payload, cancel=None, progress=None):
         report = reconcile_export({**payload, "out": str(staged)}, cancel, progress)
         if not report.get("exported"):
             return report
-        split_payload = _filtered_payload(payload, staged, report)
+        split_source = staged
+        if (payload.get("result_form") or "compare") != "direct":
+            # 主输出保留了原值行; 筛选结果从干净的直接替换形态计算
+            staged_direct = Path(temp) / "updated-direct.xlsx"
+            direct = reconcile_export({**payload, "out": str(staged_direct), "result_form": "direct"},
+                                      cancel, progress)
+            if not direct.get("exported"):
+                return direct
+            split_source = staged_direct
+        split_payload = _filtered_payload(payload, split_source, report)
         split_report = _optional_filtered_preview(split_preview(split_payload))
         result = _merge_report(report, split_report)
         if not result["can_export"]:

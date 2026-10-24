@@ -80,6 +80,7 @@ def payload(tmp_path, current_records, feedback_records, axis="rows", native=Fal
             "feedback": [{"path": str(feedback), "sheet": "计划",
                           "selection": selection(len(feedback_records), axis=axis)}],
             "key_fields": [1], "update_fields": [3, 4, 5], "compare_fields": [3, 5],
+            "result_form": "direct",      # 旧用例覆盖直接替换路径; 对比输出有专测
             "out": str(tmp_path / "result.xlsx")}
 
 
@@ -189,7 +190,9 @@ def test_updates_missing_and_native_preservation(tmp_path):
     assert ws["C3"].value == 20 and ws["D3"].value == 2
     assert str(ws["C2"].fill.fgColor.rgb)[-6:] == "FF0000"
     assert ws["C2"].font.name == "宋体" and ws["C2"].font.bold and ws["C2"].font.italic
-    assert ws["D2"].fill.fill_type != "solid" or str(ws["D2"].fill.fgColor.rgb or "")[-6:] != "FF0000"
+    # 改动默认全部红填充: D2(0→8)同为红; 未改动格(如 C3)不标红
+    assert str(ws["D2"].fill.fgColor.rgb)[-6:] == "FF0000"
+    assert ws["C3"].fill.fill_type != "solid" or str(ws["C3"].fill.fgColor.rgb or "")[-6:] != "FF0000"
     assert ws["C2"].number_format == "0.00" and ws.column_dimensions["C"].width == 27
     assert ws.row_dimensions[2].height == 35 and ws.freeze_panes == "C2"
     assert ws.page_setup.orientation == "landscape" and ws.page_margins.left == 0.4
@@ -317,6 +320,50 @@ def test_group_deletion_identified_by_serial_key(tmp_path):
     change = next(c for c in preview["changes"] if c["after"] == 44)
     assert change["key"] == ["甲", 4]
     assert any("被删除" in m["message"] for m in preview["missing"])
+
+
+def _fill_hex(cell):
+    fill = cell.fill
+    return str(fill.fgColor.rgb or "")[-6:] if fill and fill.fill_type == "solid" else None
+
+
+def test_compare_output_inserts_original_rows(tmp_path):
+    # 保留对比: 改动行下插完整原值行(新值红/原值橙), 删除行整行橙, 新增行整行红
+    base = [("例1", "甲", 1, 0), (1, "甲", 10, 5), (2, "甲", 20, 6), (3, "甲", 30, 7), (1, "乙", 50, 8)]
+    feedback = [("例1", "甲", 1, 0), (1, "甲", 11, 5), (2, "甲", 20, 6), (1, "乙", 50, 9), (9, "乙", 90, 99)]
+    p = payload(tmp_path, base, feedback)
+    p["key_fields"] = [1]; p["update_fields"] = [3, 4]; p["group_field"] = 2
+    p["result_form"] = "compare"
+    result = reconcile_export(p)
+    assert result["exported"], result
+    wb = load_workbook(p["out"]); ws = wb["计划"]
+    # 甲1(原第3行)改了C: 新值行@3 红, 原值行@4 橙, 其余值完整
+    assert ws.cell(3, 3).value == 11 and _fill_hex(ws.cell(3, 3)) in ("FF0000", "E74C3C", "C0392B", "D63031")
+    assert ws.cell(4, 3).value == 10 and _fill_hex(ws.cell(4, 3)) in ("F39C12", "E67E22", "FFC000", "F5A623")
+    assert ws.cell(4, 1).value == 1 and ws.cell(4, 4).value == 5   # 原值行完整
+    assert _fill_hex(ws.cell(3, 4)) is None                        # 未变格无填充
+    # 甲3 被删除(反馈只有甲1,甲2): 原行(第5行,经P=4插入位移到第6行)整行橙
+    r_del = 6
+    assert ws.cell(r_del, 1).value == 3
+    assert _fill_hex(ws.cell(r_del, 3)) in ("F39C12", "E67E22", "FFC000", "F5A623")
+    # 新增行(乙9)整行红: 按值定位
+    new_r = next(r for r in range(2, ws.max_row + 1) if ws.cell(r, 3).value == 90)
+    assert _fill_hex(ws.cell(new_r, 3)) in ("FF0000", "E74C3C", "C0392B", "D63031")
+    wb.close()
+
+
+def test_compare_output_columns_axis(tmp_path):
+    base = [(1, "甲", 10, 0, "进行中"), (2, "乙", 20, 0, "进行中")]
+    feedback = [(1, "甲", 11, 0, "进行中"), (2, "乙", 20, 0, "进行中")]
+    p = payload(tmp_path, base, feedback, axis="columns")
+    p["result_form"] = "compare"
+    result = reconcile_export(p)
+    assert result["exported"], result
+    wb = load_workbook(p["out"]); ws = wb.active
+    # 第2列(记录1)改了C行(字段3): 其右插入原值列
+    assert ws.cell(3, 2).value == 11 and _fill_hex(ws.cell(3, 2)) is not None
+    assert ws.cell(3, 3).value == 10 and _fill_hex(ws.cell(3, 3)) is not None
+    wb.close()
 
 
 def test_diff_categories_fill_and_clear(tmp_path):

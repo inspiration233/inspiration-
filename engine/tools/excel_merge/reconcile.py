@@ -878,8 +878,7 @@ def _analyse(payload, cancel=None, progress=None):
                                      "before": before, "after": after, "kind": kind,
                                      "source": source, "position": position, "marked": marked,
                                      "baseline_missing": baseline_record is None})
-                if marked:
-                    plan.red.append((position, field))
+                plan.red.append((position, field))   # 默认: 全部改动格红填充
         if payload.get("out"):
             out = Path(payload["out"]).expanduser().resolve()
             sources = {current.path, baseline.path}
@@ -915,6 +914,111 @@ def _extend_range(rng, axis, template, destination):
     elif axis == "columns" and result.max_col == template:
         result.max_col = destination
     return result
+
+
+def _pick_marker_colors(ws, selection):
+    """自动选标记色: 扫描数据区现有纯色填充, 为"新值/原值"各挑一个
+    与现有颜色(及彼此)距离足够大的候选色, 避免与模板撞色导致提示不明显。"""
+    def rgb_bytes(color):
+        try:
+            text = str(color.rgb or "")
+            return bytes.fromhex(text[-6:]) if len(text) >= 6 else None
+        except ValueError:
+            return None
+
+    def distance(a, b):
+        return sum((x - y) ** 2 for x, y in zip(a, b)) ** 0.5
+
+    existing = set()
+    if ws and selection:
+        for row in ws.iter_rows(min_row=selection.data_start if selection.axis == "rows" else 1,
+                                max_row=selection.data_end if selection.axis == "rows" else ws.max_row,
+                                min_col=1 if selection.axis == "rows" else selection.data_start,
+                                max_col=ws.max_column if selection.axis == "rows" else selection.data_end):
+            for cell in row:
+                fill = cell.fill
+                if fill and fill.fill_type == "solid":
+                    rgb = rgb_bytes(fill.fgColor)
+                    if rgb:
+                        existing.add(rgb)
+    new_candidates = ["FFFF0000", "FFE74C3C", "FFC0392B", "FFD63031"]
+    old_candidates = ["FFF39C12", "FFE67E22", "FFFFC000", "FFF5A623"]
+    def pick(cands, avoid):
+        for cand in cands:
+            rgb = bytes.fromhex(cand[-6:])
+            if all(distance(rgb, x) >= 110 for x in avoid) and all(distance(rgb, x) >= 110 for x in existing):
+                return cand
+        return cands[0]
+    color_new = pick(new_candidates, [])
+    color_old = pick(old_candidates, [bytes.fromhex(color_new[-6:])])
+    return color_new, color_old
+
+
+def _insert_compare_rows(plan):
+    """保留对比输出: 每条改动记录下方插入完整"原值行"(与该行格式一致),
+    新值格红底、原值格橙底; 疑似删除行整行橙底; 新增行整行红底。
+    行排列插行 / 列排列插列; 跨越插入点的合并区按累计位移重建。"""
+    ws = plan.current.ws
+    sel = plan.current.selection
+    rows_axis = sel.axis == "rows"
+    fields = range(sel.field_start, sel.field_end + 1)
+    changed_fields = {}
+    before_values = {}
+    for change in plan.changes:
+        if change.get("field") is not None and change.get("kind") not in ("new", "conflict"):
+            changed_fields.setdefault(change["position"], set()).add(change["field"])
+            before_values[(change["position"], change["field"])] = change.get("before")
+    color_new, color_old = plan.marker_colors
+
+    # 1) 快照改动记录整行的当前样式(新值已写入; 原值逐字段用 before 恢复)
+    snapshots = {}
+    for pos in changed_fields:
+        snapshots[pos] = {f: (sel.cell(ws, pos, f).value, copy(sel.cell(ws, pos, f)._style))
+                          for f in fields}
+
+    # 2) 拆开全部合并区, 记录原始坐标
+    original_merges = [(m.min_row, m.min_col, m.max_row, m.max_col) for m in list(ws.merged_cells.ranges)]
+    for m in list(ws.merged_cells.ranges):
+        ws.unmerge_cells(str(m))
+
+    # 3) 自下而上插入原值行/列并回填
+    insert_points = sorted(changed_fields, reverse=True)
+    for pos in insert_points:
+        P = pos + 1
+        if rows_axis:
+            ws.insert_rows(P)
+            ws.row_dimensions[P].height = ws.row_dimensions[pos].height
+        else:
+            ws.insert_cols(P)
+            src_dim, dst_dim = ws.column_dimensions[get_column_letter(pos)], ws.column_dimensions[get_column_letter(P)]
+            dst_dim.width = src_dim.width
+        for f in fields:
+            cell = sel.cell(ws, P, f)
+            value, style = snapshots[pos][f]
+            cell.value = before_values.get((pos, f), value)   # 改动格恢复原值
+            cell._style = copy(style)
+            if f in changed_fields[pos]:
+                cell.fill = PatternFill(fill_type="solid", fgColor=color_old)
+
+    # 4) 合并区按累计位移重建: 新位置 = 原位置 + (插入点中 <= 原位置 的数量)
+    def shifted(x):
+        return x + sum(1 for P in (pos + 1 for pos in insert_points) if P <= x)
+
+    for (r1, c1, r2, c2) in original_merges:
+        if rows_axis:
+            ws.merge_cells(start_row=shifted(r1), start_column=c1, end_row=shifted(r2), end_column=c2)
+        else:
+            ws.merge_cells(start_row=r1, start_column=shifted(c1), end_row=r2, end_column=shifted(c2))
+
+    # 5) 删除行整行橙底 / 新增行整行红底(位置按同一位移规则换算)
+    for entry in plan.missing:
+        if "被删除" in entry.get("message", "") and entry.get("position"):
+            for f in fields:
+                sel.cell(ws, shifted(entry["position"]), f).fill = PatternFill(
+                    fill_type="solid", fgColor=color_old)
+    for pos in plan.additions:
+        for f in fields:
+            sel.cell(ws, shifted(pos), f).fill = PatternFill(fill_type="solid", fgColor=color_new)
 
 
 def _append_template(source, positions):
@@ -968,6 +1072,8 @@ def reconcile_export(payload, cancel=None, progress=None):
         log = out.with_suffix(".changes.json")
         if not out.parent.is_dir():
             raise ValueError("输出目录不存在")
+        form = payload.get("result_form") or "compare"
+        plan.marker_colors = _pick_marker_colors(plan.current.ws, plan.current.selection)
         _append_template(plan.current, plan.additions)
         for position, field, value in plan.actions:
             _cancelled(cancel)
@@ -975,9 +1081,11 @@ def reconcile_export(payload, cancel=None, progress=None):
         for position, field, fill in plan.restore_colors:
             plan.current.selection.cell(plan.current.ws, position, field).fill = fill
         for position, field in plan.red:
-            # 改动标红 = 红色填充(字体原样保留)
+            # 改动标红 = 红色填充(字体原样保留), 颜色经自动选色避免与模板撞色
             plan.current.selection.cell(plan.current.ws, position, field).fill = PatternFill(
-                fill_type="solid", fgColor="FFFF0000")
+                fill_type="solid", fgColor=plan.marker_colors[0])
+        if form == "compare":
+            _insert_compare_rows(plan)
         for suffix in (".xlsx", ".json"):
             fd, name = tempfile.mkstemp(prefix=".reconcile-", suffix=suffix, dir=out.parent)
             os.close(fd)

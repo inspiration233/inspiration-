@@ -86,7 +86,7 @@ def test_w1_full_feedback_and_june_output(tmp_path):
                "key_fields": [1], "update_fields": [2, 3, 4, 5, 7],
                "compare_fields": [2, 3, 4, 5],
                "filtered_output": {"filters": [{"field": 4, "op": "month", "value": "2026-06"}]},
-               "out": str(tmp_path / "全年.xlsx")}
+               "result_form": "direct", "out": str(tmp_path / "全年.xlsx")}
     digest = hashlib.sha256(Path(payload["path"]).read_bytes()).hexdigest()
     report = workflow_preview(payload)
     # 新记录默认自动追加, 不再需要确认
@@ -101,7 +101,7 @@ def test_w1_full_feedback_and_june_output(tmp_path):
     expected = load_workbook(folder / "W1_预期_全年更新.xlsx")
     assert values(annual.active, 5) == values(expected.active, 5)
     assert red(annual.active["E6"])
-    assert not red(annual.active["G9"])
+    assert red(annual.active["G9"])    # 未选标红列的改动也默认红填充
     monthly = load_workbook(result["filtered_output_path"])
     gold_month = load_workbook(folder / "W1_预期_6月汇总.xlsx")
     assert values(monthly.active, 5) == values(gold_month.active, 5)
@@ -116,13 +116,14 @@ def test_w3_progress_is_updated_without_plan_red(tmp_path):
     payload = {**spec(folder / "W3_原始_双行表头.xlsx", 3, 5),
                "feedback": [spec(folder / "W3_反馈_财务部.xlsx", 3, 5)],
                "key_fields": [1], "update_fields": [6], "compare_fields": [2, 3, 4, 5],
-               "out": str(tmp_path / "更新.xlsx")}
+               "result_form": "direct", "out": str(tmp_path / "更新.xlsx")}
     report = reconcile_preview(payload)
     assert report["can_export"], report["issues"]
     assert len(report["changes"]) == 1 and not report["changes"][0]["marked"]
     reconcile_export(payload)
     wb = load_workbook(payload["out"])
-    assert wb.active["F6"].value == 15 and not red(wb.active["F6"])
+    # 改动默认红填充(不再要求先选标红列)
+    assert wb.active["F6"].value == 15 and red(wb.active["F6"])
     assert wb.active["G6"].value == "=F6/E6"
     assert "C3:D3" in str(wb.active.merged_cells)
     wb.close()
@@ -154,7 +155,7 @@ def feedback_case(case, tmp_path):
     return {**base, "feedback": [spec(folder / "反馈.xlsx", 1, 2)], "key_fields": [1],
             "update_fields": list(range(2, base["selection"]["field_end"] + 1)),
             "compare_fields": list(range(2, base["selection"]["field_end"] + 1)),
-            "out": str(tmp_path / f"{case}.xlsx")}
+            "result_form": "direct", "out": str(tmp_path / f"{case}.xlsx")}
 
 
 def test_c32_changed_name_unit_and_month_are_matched_by_selected_id(tmp_path):
@@ -224,7 +225,7 @@ def test_w6_interval_filter_uses_every_covered_month_without_duplicate_annual_ro
     update = {**spec(folder / "W6_原始_跨月.xlsx", 1, 2),
               "feedback": [spec(folder / "W6_反馈_月份调整.xlsx", 1, 2)],
               "key_fields": [1], "update_fields": [4, 5], "compare_fields": [4, 5],
-              "out": str(tmp_path / "全年.xlsx"),
+              "result_form": "direct", "out": str(tmp_path / "全年.xlsx"),
               "filtered_output": {"filters": payload["filters"]}}
     result = workflow_export(update)
     assert result["exported"], result["issues"]
@@ -245,7 +246,7 @@ def test_rt42_split_feedback_roundtrip_preserves_every_cell(tmp_path):
                           "out_dir": str(tmp_path / "拆分")})
     payload = {**base, "feedback": [spec(f["path"], 1, 2) for f in split["files"]],
                "key_fields": [1], "update_fields": [2, 3, 4, 5], "compare_fields": [2, 3, 4, 5],
-               "out": str(tmp_path / "往返.xlsx")}
+               "result_form": "direct", "out": str(tmp_path / "往返.xlsx")}
     result = reconcile_export(payload)
     assert result["exported"] and result["changes"] == [] and result["missing"] == []
     source, actual = load_workbook(original), load_workbook(payload["out"])

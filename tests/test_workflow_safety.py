@@ -32,7 +32,7 @@ def payload(tmp_path, total=False):
             "feedback": [{"path": str(feedback), "sheet": "明细", "selection": selection}],
             "key_fields": [1], "update_fields": [3], "compare_fields": [3],
             "filtered_output": {"filters": [{"field": 2, "op": "equals", "value": "1月"}]},
-            "out": str(tmp_path / "result.xlsx")}
+            "result_form": "direct", "out": str(tmp_path / "result.xlsx")}
 
 
 def destinations(p):
