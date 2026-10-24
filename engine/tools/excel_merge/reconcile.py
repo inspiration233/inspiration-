@@ -274,7 +274,10 @@ class Plan:
             "totals": {"records": self.record_count, "feedback_records": self.feedback_count,
                        "changes": len(self.changes), "missing": len(self.missing),
                        "additions": len(self.additions), "additions_skipped": self.additions_skipped,
-                       "unresolved": unresolved, "duplicate_imports": self.duplicate_imports},
+                       "unresolved": unresolved, "duplicate_imports": self.duplicate_imports,
+                       "updates": sum(1 for c in self.changes if c.get("kind") in ("update", "cancel")),
+                       "fills": sum(1 for c in self.changes if c.get("kind") == "fill"),
+                       "clears": sum(1 for c in self.changes if c.get("kind") == "clear")},
         })
 
 
@@ -862,7 +865,14 @@ def _analyse(payload, cancel=None, progress=None):
                             plan.restore_colors.append((position, field, copy(baseline_cell.fill)))
                     continue
                 marked = field in compares
-                kind = "cancel" if isinstance(after, str) and after.strip() in ("取消", "已取消", "作废") else "update"
+                if isinstance(after, str) and after.strip() in ("取消", "已取消", "作废"):
+                    kind = "cancel"
+                elif _blank(before) and not _blank(after):
+                    kind = "fill"        # 填写: 底稿为空, 反馈填入
+                elif not _blank(before) and _blank(after):
+                    kind = "clear"       # 清空: 底稿有值, 反馈删空
+                else:
+                    kind = "update"
                 plan.changes.append({"id": "change:" + _digest([key, field]), "key": key_values,
                                      "field": field, "field_title": " / ".join(current.headers[field]),
                                      "before": before, "after": after, "kind": kind,

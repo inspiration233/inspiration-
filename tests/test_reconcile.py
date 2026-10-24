@@ -319,6 +319,19 @@ def test_group_deletion_identified_by_serial_key(tmp_path):
     assert any("被删除" in m["message"] for m in preview["missing"])
 
 
+def test_diff_categories_fill_and_clear(tmp_path):
+    # 差异分类: 底稿空→反馈值=填写; 底稿值→反馈空=清空; 值→值=改值
+    base = [(1, "甲", 10, 5, "进行中"), (2, "乙", None, 6, "进行中")]
+    feedback = [(1, "甲", None, 7, "进行中"), (2, "乙", 99, None, "进行中")]
+    p = payload(tmp_path, base, feedback)
+    p["update_fields"] = [3, 4]
+    preview = reconcile_preview(p)
+    kinds = {(c["key"][0], c["field"]): c["kind"] for c in preview["changes"]}
+    assert kinds[(1, 3)] == "clear" and kinds[(1, 4)] == "update"
+    assert kinds[(2, 3)] == "fill" and kinds[(2, 4)] == "clear"
+    assert preview["totals"] == {**preview["totals"], "updates": 1, "fills": 1, "clears": 2}
+
+
 def test_group_deletion_conservative_when_serials_unusable(tmp_path):
     # 序号体系被打乱(越界值): 退回按位对位+数量差警示+错位提醒
     base = [(1, "甲", 10, 0, "进行中"), (2, "甲", 20, 0, "进行中"),

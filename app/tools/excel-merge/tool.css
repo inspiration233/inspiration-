@@ -170,3 +170,7 @@ body.modal-open #stage{overflow:hidden}
 .excel-tool .nowrap-label{flex-wrap:wrap;min-width:0}
 .excel-tool .nowrap-label input{flex-shrink:0}
 .excel-tool .field-batch{display:inline-flex;gap:6px;margin-left:auto}
+.excel-tool .changes-table .fill-kind{color:var(--success)}
+.excel-tool .changes-table .clear-kind{color:var(--warn)}
+.excel-tool .changes-table .fill-kind{color:var(--success)}
+.excel-tool .changes-table .clear-kind{color:var(--warn)}

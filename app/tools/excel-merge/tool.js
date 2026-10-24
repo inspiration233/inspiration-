@@ -585,7 +585,7 @@
         const rowsKnown=groups.length>0&&groups.every(group=>group.row_count!=null);
         const detail=!independent&&records!=null?`${records} 条记录`:rowsKnown?`合计 ${groups.reduce((sum,group)=>sum+Number(group.row_count),0)} 行（含标题和表头）`:'';
         $('result-summary').textContent=`${groups.length} 张结果工作表${detail?' · '+detail:''}`;
-      }else $('result-summary').textContent=state.mode==='reconcile'?`${totals.records??'—'} 条底表记录 · ${totals.changes??changes.length} 处变化 · ${totals.additions??changes.filter(c=>c.kind==='new').length} 条新增${totals.additions_skipped?` · ${totals.additions_skipped} 条新增未并入`:''} · ${totals.missing??report.missing?.length??0} 条未收到反馈`:`${groups.length} 个输出文件 · ${totals.records??totals.rows??groups.reduce((n,g)=>n+(Number(g.count)||0),0)} 条记录`;
+      }else $('result-summary').textContent=state.mode==='reconcile'?`${totals.records??'—'} 条底表记录 · ${totals.changes??changes.length} 处变化${(totals.updates||totals.fills||totals.clears)?`（改值 ${totals.updates??0} · 填写 ${totals.fills??0} · 清空 ${totals.clears??0}）`:''} · 新增 ${totals.additions??changes.filter(c=>c.kind==='new').length}${totals.additions_skipped?`（另 ${totals.additions_skipped} 条未并入）`:''} · ${totals.missing??report.missing?.length??0} 条未收到反馈`:`${groups.length} 个输出文件 · ${totals.records??totals.rows??groups.reduce((n,g)=>n+(Number(g.count)||0),0)} 条记录`;
       const warnings=[...(report.warnings||[])];if(report.retained_sheets?.length)warnings.push('同时保留依赖工作表：'+report.retained_sheets.map(s=>typeof s==='string'?s:s.name).join('、'));
       const messages=warningMessages(warnings),warningBox=$('result-warnings');warningBox.replaceChildren();warningBox.classList.toggle('hidden',!messages.length);
       // 默认折叠: 大文件的兼容提示可能几十条, 不折叠会把下方预览挤到很深
@@ -622,8 +622,10 @@
     }
     function renderChanges(changes) {
       const box=$('result-changes');if(!changes.length){box.append(make('p','hint','当前选定范围内没有值变化。'));return;}
-      const scroll=make('div','changes-scroll'),table=make('table','changes-table'),head=make('tr');for(const title of ['记录','字段','原值','新值','来源'])head.append(make('th','',title));table.append(head);
-      for(const change of changes){const tr=make('tr');tr.append(make('td','',text(change.key)),make('td','',change.field_title||(change.field==null?'新增记录':fieldLabel(change.field))),make('td','',text(change.before)),make('td',change.marked?'changed-value':'',text(change.after)),make('td','',typeof change.source==='object'?`${basename(change.source.path||'')} / ${change.source.sheet||''}`:text(change.source)));table.append(tr);}
+      const kindLabels={update:'改值',cancel:'改值(取消)',fill:'填写',clear:'清空',new:'新增',conflict:'冲突'};
+      const kindClass={fill:'fill-kind',clear:'clear-kind'};
+      const scroll=make('div','changes-scroll'),table=make('table','changes-table'),head=make('tr');for(const title of ['记录','类型','字段','原值','新值','来源'])head.append(make('th','',title));table.append(head);
+      for(const change of changes){const tr=make('tr');tr.append(make('td','',text(change.key)),make('td',kindClass[change.kind]||'',kindLabels[change.kind]||'改值'),make('td','',change.field_title||(change.field==null?'新增记录':fieldLabel(change.field))),make('td','',text(change.before)),make('td',change.marked?'changed-value':'',text(change.after)),make('td','',typeof change.source==='object'?`${basename(change.source.path||'')} / ${change.source.sheet||''}`:text(change.source)));table.append(tr);}
       scroll.append(table);box.append(scroll,make('p','hint','红色表示选定比较字段中的调整。导出时保留原表样式，并对确认的调整标红。'));
     }
     function renderMissing(missing) {
