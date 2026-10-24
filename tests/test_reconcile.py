@@ -681,7 +681,7 @@ def test_existing_red_fill_is_not_evidence_of_change(tmp_path):
     assert reconcile_preview(p)["changes"] == []
 
 
-@pytest.mark.parametrize("object_name", ["xl/embeddings/object1.bin", "xl/drawings/drawing1.xml",
+@pytest.mark.parametrize("object_name", ["xl/embeddings/object1.bin",
                                       "xl/vbaProject.bin", "xl/slicers/slicer1.xml"])
 def test_unsupported_objects_are_rejected_without_silent_loss(tmp_path, object_name):
     p = payload(tmp_path, [("T1", "甲", 10, 0, "进行中")], [("T1", "甲", 11, 1, "进行中")])

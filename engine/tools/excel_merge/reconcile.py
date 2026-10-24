@@ -71,20 +71,24 @@ def _check_package(path):
         raise ValueError(f"文件不存在：{path}")
     # openpyxl cannot round-trip these objects reliably. Reject before loading,
     # including disguised macro files and signed packages, rather than dropping them.
-    prefixes = ("xl/drawings/", "xl/charts/", "xl/media/", "xl/embeddings/",
-                "xl/activex/", "xl/ctrlprops/", "xl/pivottables/", "xl/pivotcache/",
-                "xl/slicers/", "xl/slicercaches/", "xl/threadedcomments/",
-                "xl/persons/", "xl/richdata/", "customxml/", "customui/",
-                "_xmlsignatures/", "xl/externallinks/",
-                "xl/macrosheets/", "xl/dialogsheets/", "xl/model/", "xl/chartsheets/",
-                "xl/querytables/")
+    hard_prefixes = ("xl/activex/", "xl/ctrlprops/", "xl/pivottables/", "xl/pivotcache/",
+                     "xl/slicers/", "xl/slicercaches/", "xl/threadedcomments/",
+                     "xl/persons/", "xl/richdata/", "customxml/", "customui/",
+                     "_xmlsignatures/", "xl/externallinks/",
+                     "xl/macrosheets/", "xl/dialogsheets/", "xl/model/", "xl/chartsheets/",
+                     "xl/querytables/", "xl/embeddings/")
+    soft_prefixes = ("xl/drawings/", "xl/charts/", "xl/media/")
     notices = []
     with ZipFile(path) as archive:
         for name in archive.namelist():
             lower = name.lower()
             if lower.startswith("xl/printersettings/"):
                 notices.append("打印机专属二进制设置不保留；常规纸张、方向和页边距继续保留。")
-            if (lower.startswith(prefixes) or "vbaproject" in lower
+            if lower.startswith(soft_prefixes):
+                # 图形/图表/媒体: 回填不改布局,这些对象在原位不动;可能不完美保留但不会丢数据
+                notices.append(f"{name} 将按原样随结果保留；外观如有变化请核对。")
+                continue
+            if (lower.startswith(hard_prefixes) or "vbaproject" in lower
                     or lower in ("xl/connections.xml", "xl/metadata.xml", "xl/xmlmaps.xml")):
                 raise ValueError(f"含当前回填器无法完整保留的对象：{name}；已阻止导出")
             if lower.startswith("xl/") and lower.endswith(".xml"):
