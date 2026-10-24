@@ -125,13 +125,12 @@
         const cfg = await loadSource(source, sheet, page);
         if (request !== state.gridRequest || mode !== state.mode || state.disposed) return;
         source.sheet = cfg.report.sheet;
-        // 回填: 切到已记忆过角色的表页时载入该表自己的设置
+        // 回填: 切表时载入该表自己的角色; 没配置过的表从空白开始(不继承上一表)
         if (state.mode === 'reconcile' && source === primary()) {
           const s2 = current(), remembered = s2.sheetRoles[source.sheet];
-          if (remembered) {
-            s2.keys = [...remembered.keys]; s2.updates = [...remembered.updates];
-            s2.compares = [...remembered.compares]; s2.groupField = remembered.groupField;
-          }
+          const r = remembered || { keys: [], updates: [], compares: [], groupField: null };
+          s2.keys = [...r.keys]; s2.updates = [...r.updates];
+          s2.compares = [...r.compares]; s2.groupField = r.groupField;
         }
         // 文件加入后工作区在首屏之下, 不自动滚过去用户根本找不到点击区
         if (newlyOpened) $('workspace').scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -567,20 +566,29 @@
         const baseSrc = primary();
         const common = (baseSrc.sheets || []).filter(sh => sh.state === 'visible'
           && s.feedback.every(f => (f.sheets || []).some(x => x.name === sh.name)));
-        const entries = [];
+        // 多表参与必须逐表人工确认过范围(打开该表并「应用范围」),
+        // 不做引擎侧自动识别——范围错了回填会静默错位, 宁可多一步确认
+        const entries = [], missing = [];
         for (const sh of common) {
           const roles = s.sheetRoles[sh.name];
           const isCurrent = sh.name === baseSrc.sheet;
           const r = roles || (isCurrent ? { keys: s.keys, updates: s.updates, compares: s.compares, groupField: s.groupField } : null);
           if (!r || !r.keys.length || !r.updates.length) continue;
           const cfg = baseSrc.configs[sh.name];
+          if (!cfg || !cfg.selection) { missing.push(`底稿的「${sh.name}」`); continue; }
           const fbSel = {};
-          for (const f of s.feedback) { const c = f.configs && f.configs[sh.name]; if (c && c.selection) fbSel[f.path] = c.selection; }
-          entries.push({ sheet: sh.name, selection: cfg && cfg.selection,
+          for (const f of s.feedback) {
+            const c = f.configs && f.configs[sh.name];
+            if (c && c.selection) fbSel[f.path] = c.selection;
+            else missing.push(`反馈「${f.name}」的「${sh.name}」`);
+          }
+          entries.push({ sheet: sh.name, selection: cfg.selection,
             feedback_selections: fbSel,
             key_fields: [...r.keys], update_fields: [...r.updates], compare_fields: [...r.compares],
             ...(r.groupField != null ? { group_field: r.groupField } : {}) });
         }
+        if (missing.length)
+          throw Error('以下工作表已配置角色但范围未确认，请逐张打开（含各反馈文件）并点「应用范围」：' + missing.join('；'));
         if (entries.length > 1) result.sheets = entries;
       }
       return result;
