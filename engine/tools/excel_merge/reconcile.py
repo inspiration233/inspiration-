@@ -73,11 +73,12 @@ def _check_package(path):
     # including disguised macro files and signed packages, rather than dropping them.
     hard_prefixes = ("xl/activex/", "xl/ctrlprops/", "xl/pivottables/", "xl/pivotcache/",
                      "xl/slicers/", "xl/slicercaches/", "xl/threadedcomments/",
-                     "xl/persons/", "xl/richdata/", "customxml/", "customui/",
+                     "xl/persons/", "xl/richdata/",
                      "_xmlsignatures/", "xl/externallinks/",
                      "xl/macrosheets/", "xl/dialogsheets/", "xl/model/", "xl/chartsheets/",
                      "xl/querytables/", "xl/embeddings/")
-    soft_prefixes = ("xl/drawings/", "xl/charts/", "xl/media/")
+    soft_prefixes = ("xl/drawings/", "xl/charts/", "xl/media/",
+                     "customxml/", "customui/")
     notices = []
     with ZipFile(path) as archive:
         for name in archive.namelist():
