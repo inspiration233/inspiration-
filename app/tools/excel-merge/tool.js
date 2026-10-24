@@ -13,7 +13,7 @@
     const cellRef = (row, col) => colName(col) + row;
     const parseCell = raw => { const m = /^\$?([A-Z]+)\$?([1-9]\d*)$/i.exec(raw.trim()); if (!m) throw Error('请使用 A1 这样的单元格坐标。'); return { row: Number(m[2]), col: [...m[1].toUpperCase()].reduce((n, c) => n * 26 + c.charCodeAt(0) - 64, 0) }; };
     const parseRange = raw => { const parts = raw.trim().split(':'); if (parts.length > 2) throw Error('区域格式应为 A3:F4。'); const a = parseCell(parts[0]), b = parseCell(parts[1] || parts[0]); return { r1: Math.min(a.row, b.row), r2: Math.max(a.row, b.row), c1: Math.min(a.col, b.col), c2: Math.max(a.col, b.col) }; };
-    const defaults = () => ({ files: [], feedback: [], baseline: null, active: null, role: 'group', group: [], groupMode: 'combination', filters: [], outputFilters: [], filteredEnabled: false, filteredOptions: {resolutions:{}}, blankGroup: 'separate', outputFields: [], filteredFields: [], keys: [], updates: [], compares: [], groupField: null, resultForm: 'compare', resolutions: {}, retained: [], shared: [], options: { mode: 'auto', align: 'loose', shape: 'auto', templateIndex: 0, templateSheet: null, hidden: false, source: false, removeSummary: false, keywords: '合计,小计,总计,汇总,累计', stripSerial: true, minFillRatio: 20, renumber: true, title: false, exampleRows: true, retainAll: false }, result: null, payload: null, version: 0, previewVersion: -1, schemeProblems: [] });
+    const defaults = () => ({ files: [], feedback: [], baseline: null, active: null, role: 'group', group: [], groupMode: 'combination', filters: [], outputFilters: [], filteredEnabled: false, filteredOptions: {resolutions:{}}, blankGroup: 'separate', outputFields: [], filteredFields: [], keys: [], updates: [], compares: [], groupField: null, resultForm: 'compare', sheetRoles: {}, resolutions: {}, retained: [], shared: [], options: { mode: 'auto', align: 'loose', shape: 'auto', templateIndex: 0, templateSheet: null, hidden: false, source: false, removeSummary: false, keywords: '合计,小计,总计,汇总,累计', stripSerial: true, minFillRatio: 20, renumber: true, title: false, exampleRows: true, retainAll: false }, result: null, payload: null, version: 0, previewVersion: -1, schemeProblems: [] });
     const sessions = { merge: defaults(), split: defaults(), reconcile: defaults() };
     sessions.reconcile.role = 'keys';
     const state = { mode: 'merge', busy: false, merging: false, disposed: false, gridRequest: 0, operationRequest: 0, picking: null, firstCorner: null, rangeDirty: false, offProgress: null };
@@ -74,6 +74,12 @@
 
     function invalidate(message = '设置已变化，请重新预览。', keepResolutions = false) {
       const s = current(); s.version++; s.result = null; s.payload = null; s.previewVersion = -1;
+      // 回填: 主键/回填列等角色按工作表记忆(切页签再切回不丢)
+      if (state.mode === 'reconcile' && s.files.length) {
+        const active = activeSource();
+        if (active && isPrimary(active) && active.sheet && (s.keys.length || s.sheetRoles[active.sheet]))
+          s.sheetRoles[active.sheet] = { keys: [...s.keys], updates: [...s.updates], compares: [...s.compares], groupField: s.groupField };
+      }
       if (!keepResolutions) { s.resolutions = {}; s.retained = []; s.shared = []; s.filteredOptions = {resolutions:{}}; }
       $('result-pane').classList.add('hidden'); $('btn-export').disabled = true;
       $('action-hint').textContent = message;
@@ -119,6 +125,14 @@
         const cfg = await loadSource(source, sheet, page);
         if (request !== state.gridRequest || mode !== state.mode || state.disposed) return;
         source.sheet = cfg.report.sheet;
+        // 回填: 切到已记忆过角色的表页时载入该表自己的设置
+        if (state.mode === 'reconcile' && source === primary()) {
+          const s2 = current(), remembered = s2.sheetRoles[source.sheet];
+          if (remembered) {
+            s2.keys = [...remembered.keys]; s2.updates = [...remembered.updates];
+            s2.compares = [...remembered.compares]; s2.groupField = remembered.groupField;
+          }
+        }
         // 文件加入后工作区在首屏之下, 不自动滚过去用户根本找不到点击区
         if (newlyOpened) $('workspace').scrollIntoView({ behavior: 'smooth', block: 'start' });
         renderWorkspace(); renderRoles(); renderFilters(); renderFiles(); updateAction();
@@ -547,7 +561,29 @@
       for(const file of s.feedback){if(!config(file))await loadSource(file);const fc=config(file);feedback.push({path:file.path,sheet:file.sheet,selection:fc.selection,selection_origin:fc.selection_origin||'auto',field_map:{...autoMap(cfg.report.fields,fc.report.fields),...fc.field_map}});}
       let baseline;
       if(s.baseline){if(!config(s.baseline))await loadSource(s.baseline);const bc=config(s.baseline);baseline={path:s.baseline.path,sheet:s.baseline.sheet,selection:bc.selection,selection_origin:bc.selection_origin||'auto',field_map:{...autoMap(cfg.report.fields,bc.report.fields),...bc.field_map}};}
-      return {...base,feedback,...(baseline?{baseline}:{}),key_fields:[...s.keys],update_fields:[...s.updates],compare_fields:[...s.compares],...(s.groupField!=null?{group_field:s.groupField}:{}),result_form:s.resultForm,resolutions:clone(s.resolutions),...(s.filteredEnabled?{filtered_output:{...clone(s.filteredOptions),filters:clone(s.outputFilters),...(s.filteredFields.length?{output_fields:[...s.filteredFields]}:{})}}:{})};
+      const result = {...base,feedback,...(baseline?{baseline}:{}),key_fields:[...s.keys],update_fields:[...s.updates],compare_fields:[...s.compares],...(s.groupField!=null?{group_field:s.groupField}:{}),result_form:s.resultForm,resolutions:clone(s.resolutions),...(s.filteredEnabled?{filtered_output:{...clone(s.filteredOptions),filters:clone(s.outputFilters),...(s.filteredFields.length?{output_fields:[...s.filteredFields]}:{})}}:{})};
+      // 多表回填: 与每份反馈同名且已配置角色的底稿表页都参与(≥2 张才启用多表链路)
+      {
+        const baseSrc = primary();
+        const common = (baseSrc.sheets || []).filter(sh => sh.state === 'visible'
+          && s.feedback.every(f => (f.sheets || []).some(x => x.name === sh.name)));
+        const entries = [];
+        for (const sh of common) {
+          const roles = s.sheetRoles[sh.name];
+          const isCurrent = sh.name === baseSrc.sheet;
+          const r = roles || (isCurrent ? { keys: s.keys, updates: s.updates, compares: s.compares, groupField: s.groupField } : null);
+          if (!r || !r.keys.length || !r.updates.length) continue;
+          const cfg = baseSrc.configs[sh.name];
+          const fbSel = {};
+          for (const f of s.feedback) { const c = f.configs && f.configs[sh.name]; if (c && c.selection) fbSel[f.path] = c.selection; }
+          entries.push({ sheet: sh.name, selection: cfg && cfg.selection,
+            feedback_selections: fbSel,
+            key_fields: [...r.keys], update_fields: [...r.updates], compare_fields: [...r.compares],
+            ...(r.groupField != null ? { group_field: r.groupField } : {}) });
+        }
+        if (entries.length > 1) result.sheets = entries;
+      }
+      return result;
     }
     async function previewResult() {
       if(state.busy||state.merging)return false;

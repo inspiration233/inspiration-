@@ -898,8 +898,129 @@ def _analyse(payload, cancel=None, progress=None):
         return plan
 
 
+def _auto_selection(path, sheet):
+    """引擎侧自动识别某张表的范围(界面未逐张打开反馈/底稿各表时使用)。"""
+    try:
+        from . import reader
+        from .preview import _suggest
+        tables, rd = reader.list_tables(path, True)
+        src = next((s for s, _ in tables if s is not None and s.sheet_name == sheet), None)
+        if src is None:
+            return None
+        ws = rd.wb[sheet]
+        suggestion, _recognition = _suggest(path, sheet, ws.max_row, ws.max_column)
+        return suggestion
+    except Exception:
+        return None
+
+
+def _sheet_payloads(payload):
+    """多表回填: payload["sheets"] 为逐表配置列表, 反馈缺省选区时自动识别。
+    返回 (逐表子载荷, 未参与表及原因)。"""
+    sheets = payload.get("sheets") or []
+    out, skipped = [], []
+    for entry in sheets:
+        sub = dict(payload)
+        sub["sheet"] = entry["sheet"]
+        for key in ("selection", "key_fields", "update_fields", "compare_fields",
+                    "group_field", "result_form"):
+            if entry.get(key) is not None:
+                sub[key] = entry[key]
+        feedback, ok = [], True
+        for item in payload.get("feedback", []):
+            one = dict(item)
+            one["sheet"] = entry["sheet"]
+            known = entry.get("feedback_selections", {}).get(item["path"])
+            if known:
+                one["selection"] = known
+            else:
+                auto = _auto_selection(item["path"], entry["sheet"])
+                if auto is None:
+                    skipped.append((entry["sheet"], f"反馈文件无法识别该表：{item['path']}"))
+                    ok = False
+                    break
+                one["selection"] = auto
+            feedback.append(one)
+        if ok:
+            sub["feedback"] = feedback
+            sub.pop("sheets", None)
+            out.append((entry["sheet"], sub))
+    return out, skipped
+
+
+def _merge_sheet_reports(reports):
+    """合并逐表回填报告: 问题/警告带表名前缀, 变化标注来源表。"""
+    merged = {"changes": [], "issues": [], "missing": [], "warnings": [],
+              "can_export": True, "fields": [], "totals": {}}
+    totals = {}
+    for sheet, report in reports:
+        tag = f"[{sheet}] "
+        merged["changes"] += [dict(c, sheet=sheet) for c in report.get("changes", [])]
+        merged["issues"] += [dict(i, **({"message": tag + str(i.get("message", ""))})
+                                   if i.get("message") else {}) for i in report.get("issues", [])]
+        merged["missing"] += [dict(m, sheet=sheet) for m in report.get("missing", [])]
+        merged["warnings"] += [tag + w if not w.startswith("[") else w for w in report.get("warnings", [])]
+        merged["can_export"] = merged["can_export"] and bool(report.get("can_export"))
+        merged["fields"] += report.get("fields", [])
+        for key, value in (report.get("totals") or {}).items():
+            if isinstance(value, (int, float)):
+                totals[key] = totals.get(key, 0) + value
+    merged["totals"] = totals
+    return merged
+
+
+def reconcile_multi_preview(payload, cancel=None, progress=None):
+    entries, skipped = _sheet_payloads(payload)
+    reports = [(sheet, {"changes": [], "issues": [{"message": reason, "choices": []}],
+                        "missing": [], "warnings": [], "can_export": False, "totals": {}})
+               for sheet, reason in skipped]
+    for index, (sheet, sub) in enumerate(entries):
+        _cancelled(cancel)
+        report = reconcile_preview(sub)
+        reports.append((sheet, report))
+        if progress:
+            progress(index + 1, len(payload.get("sheets") or []), sheet, 0)
+    return _merge_sheet_reports(reports)
+
+
+def reconcile_multi_export(payload, cancel=None, progress=None):
+    """逐表链式导出: 每张表的回填以上一张表的结果为底, 最终合成一个文件。"""
+    import tempfile
+    out = Path(payload["out"]).expanduser().resolve()
+    entries, skipped = _sheet_payloads(payload)
+    if skipped:
+        raise ValueError("；".join(f"表「{sheet}」{reason}" for sheet, reason in skipped))
+    if not entries:
+        raise ValueError("没有可回填的工作表配置")
+    import shutil
+    with tempfile.TemporaryDirectory(prefix=".excel-multi-reconcile-") as temp:
+        current_input = None
+        reports = []
+        for index, (sheet, sub) in enumerate(entries):
+            _cancelled(cancel)
+            staged = Path(temp) / f"stage-{index}.xlsx"
+            if current_input is not None:
+                # 上一张表的回填结果作为本表底稿, 反馈仍是原始反馈文件
+                sub = dict(sub, path=str(current_input))
+            sub_result = reconcile_export(dict(sub, out=str(staged)), cancel, progress)
+            if not sub_result.get("exported"):
+                return sub_result
+            reports.append((sheet, sub_result))
+            current_input = staged
+        result = _merge_sheet_reports(reports)
+        log = out.with_suffix(".changes.json")
+        if out.exists() or log.exists():
+            raise ValueError("输出文件或变更清单已存在，请选择新名称")
+        shutil.move(str(current_input), out)
+        audit = {**result, "out": str(out), "changes_path": str(log), "exported": True}
+        log.write_text(json.dumps(audit, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+        return audit
+
+
 def reconcile_preview(payload):
     """Return JSON-safe changes/issues without changing any workbook."""
+    if payload.get("sheets"):
+        return reconcile_multi_preview(payload, cancel=None, progress=None)
     plan = _analyse(payload)
     try:
         return plan.result()
@@ -1057,6 +1178,8 @@ def _append_template(source, positions):
 
 def reconcile_export(payload, cancel=None, progress=None):
     """Export to a new XLSX and adjacent .changes.json; unresolved issues block."""
+    if payload.get("sheets"):
+        return reconcile_multi_export(payload, cancel, progress)
     plan = _analyse(payload, cancel, progress)
     temporary = []
     created = []

@@ -322,6 +322,42 @@ def test_group_deletion_identified_by_serial_key(tmp_path):
     assert any("被删除" in m["message"] for m in preview["missing"])
 
 
+def test_multi_sheet_reconcile_both_sheets_updated(tmp_path):
+    # 多表回填: 底稿两张表同名存在于反馈, 各自独立回填, 输出合成一个文件
+    base = tmp_path / "base.xlsx"
+    fb = tmp_path / "fb.xlsx"
+    book(base, [(1, "甲", 10, 0, "进行中"), (2, "乙", 20, 0, "进行中")])
+    book(fb, [(1, "甲", 11, 0, "进行中"), (2, "乙", 20, 0, "进行中")])
+    # 第二张表(结构与总表不同)也造同名表
+    from openpyxl import load_workbook
+    for path, mark in ((base, "底稿"), (fb, "反馈")):
+        wb = load_workbook(path)
+        ws = wb.create_sheet("附表")
+        ws.append(["编号", "备注"])
+        ws.append(["A1", mark]); ws.append(["A2", mark])
+        wb.save(path); wb.close()
+    p = {"path": str(base), "sheet": "计划", "selection": selection(2),
+         "feedback": [{"path": str(fb), "sheet": "计划", "selection": selection(2)}],
+         "key_fields": [1], "update_fields": [3], "result_form": "direct",
+         "resolutions": {}, "out": str(tmp_path / "out.xlsx")}
+    p["sheets"] = [
+        {"sheet": "计划", "selection": selection(2), "key_fields": [1], "update_fields": [3]},
+        {"sheet": "附表", "selection": {"axis": "rows", "header_start": 1, "header_end": 1,
+                                        "data_start": 2, "data_end": 3, "field_start": 1, "field_end": 2},
+         "key_fields": [1], "update_fields": [2]},
+    ]
+    preview = reconcile_preview(p)
+    assert preview["can_export"], preview["issues"]
+    assert all(c.get("sheet") for c in preview["changes"])
+    assert any(c["sheet"] == "计划" and c["after"] == 11 for c in preview["changes"])
+    assert any(c["sheet"] == "附表" and c["after"] == "反馈" for c in preview["changes"])
+    result = reconcile_export(p)
+    assert result["exported"], result
+    wb = load_workbook(p["out"])
+    assert wb["计划"]["C2"].value == 11 and wb["附表"]["B2"].value == "反馈"
+    wb.close()
+
+
 def _fill_hex(cell):
     fill = cell.fill
     return str(fill.fgColor.rgb or "")[-6:] if fill and fill.fill_type == "solid" else None
