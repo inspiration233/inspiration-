@@ -360,17 +360,29 @@ def test_unknown_worksheet_extension_warns_and_really_exports(tmp_path):
 @pytest.mark.parametrize("feature,namespace", [
     ("calcFeatures", "http://schemas.microsoft.com/office/spreadsheetml/2018/calcfeatures"),
     ("absPath", "http://schemas.microsoft.com/office/spreadsheetml/2010/11/main"),
-    ("vendorMetadata", "urn:vendor:spreadsheet-extension"),
 ])
-def test_workbook_extensions_warn_and_really_export(tmp_path, feature, namespace):
+def test_harmless_workbook_extensions_stay_silent_but_export(tmp_path, feature, namespace):
+    # calcFeatures/absPath 是计算缓存与路径记录: WPS/Excel 保存的文件几乎都带,
+    # 丢失不影响数据与外观 → 不提示(未知扩展的提示由其它用例覆盖)
     source = fixture(tmp_path / "input.xlsx")
     rewrite_package(source, {"xl/workbook.xml": lambda raw: extension_xml(raw, feature, namespace)})
     before = source.read_bytes()
     out = tmp_path / "output.xlsx"
     report = merge_workbook({"paths": [str(source)]}, out)
     assert report["can_export"] and not report["issues"], report
-    assert any(feature in message and "input.xlsx" in message for message in report["warnings"])
+    assert not any(feature in message for message in report["warnings"])
     assert source.read_bytes() == before
+    assert_basic_cells(out)
+
+
+def test_unknown_workbook_extension_still_warns_and_exports(tmp_path):
+    source = fixture(tmp_path / "input.xlsx")
+    rewrite_package(source, {"xl/workbook.xml": lambda raw:
+                             extension_xml(raw, "vendorMetadata", "urn:vendor:spreadsheet-extension")})
+    out = tmp_path / "output.xlsx"
+    report = merge_workbook({"paths": [str(source)]}, out)
+    assert report["can_export"] and not report["issues"], report
+    assert any("vendorMetadata" in message for message in report["warnings"])
     assert_basic_cells(out)
 
 

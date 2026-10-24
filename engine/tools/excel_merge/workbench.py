@@ -90,6 +90,7 @@ def _preflight(payload, options):
         return [{"id": "no-files", "message": "请先添加文件"}], warnings
     if options.style == "fidelity" and options.mode != "workbook":
         shells = _shell_only_files(paths)
+        themes = {}
         for raw in paths:
             path = Path(raw)
             if path.name in shells:
@@ -99,12 +100,13 @@ def _preflight(payload, options):
                 continue
             with ZipFile(path) as archive:
                 names = archive.namelist()
-                if ("xl/theme/theme1.xml" in names and
-                        _theme_signature(archive.read("xl/theme/theme1.xml")) != _theme_signature(theme_xml)):
-                    warnings.append(f"{path.name} 使用自定义颜色或字体主题，拼接后部分颜色或字体可能变化；已继续处理。如需更接近各页外观，可选“装入同一文件”。")
-                visual_prefixes = ("xl/drawings/", "xl/charts/", "xl/printerSettings/")
+                if "xl/theme/theme1.xml" in names:
+                    # 输出以模板文件的主题为准: 参与文件主题全部一致时无损失,
+                    # 不一致才提示(单文件合并永不提示)
+                    themes[_theme_signature(archive.read("xl/theme/theme1.xml"))] = path.name
+                visual_prefixes = ("xl/drawings/", "xl/charts/")
                 if any(n.startswith(visual_prefixes) for n in names):
-                    warnings.append(f"{path.name}：拼接结果可能不保留图表、图形或打印机专属设置；已继续处理单元格内容和常规格式。")
+                    warnings.append(f"{path.name}：拼接结果可能不保留图表、图形；已继续处理单元格内容和常规格式。")
                 unsupported = [n for n in names if n.startswith(("xl/pivotTables/", "xl/pivotCache/",
                                "xl/slicer", "xl/activeX/", "xl/externalLinks/", "xl/embeddings/",
                                "xl/queryTables/", "xl/richData/", "xl/model/"))
@@ -118,6 +120,9 @@ def _preflight(payload, options):
                         warnings.extend(f"{path.name}：{notice}" for notice in inspect_extensions(name, archive.read(name)))
                     except ValueError as error:
                         issues.append({"id": f"extensions:{path}:{name}", "message": f"{path.name}：{error}"})
+        if len(themes) > 1:
+            warnings.append("多份文件的颜色主题不同，输出以模板文件主题为准；"
+                            "其他文件中依赖主题的颜色可能变化。")
     return issues, warnings
 
 

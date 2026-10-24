@@ -107,7 +107,8 @@ def test_export_cannot_overwrite_source_or_other_file(tmp_path):
     assert other.read_bytes() == b"unrelated"
 
 
-def test_custom_theme_exports_with_visible_compatibility_notice(tmp_path):
+def test_single_custom_theme_is_silent_output_keeps_template_theme(tmp_path):
+    # 单文件: 输出即以该文件为模板, 主题原样保留 → 不提示
     spec = make_source(tmp_path / "theme.xlsx")
     book = load_workbook(spec["path"])
     book.loaded_theme = theme_xml.replace("4F81BD", "FF1122")
@@ -116,7 +117,22 @@ def test_custom_theme_exports_with_visible_compatibility_notice(tmp_path):
     payload = {"paths": [spec["path"]], "selections": [spec]}
     report = merge_preview(payload)
     assert report["can_export"], report
-    assert any("主题" in warning for warning in report["warnings"])
+    assert not any("主题" in warning for warning in report["warnings"])
+
+
+def test_differing_themes_across_files_warn_once(tmp_path):
+    # 多文件主题不一致: 非模板文件依赖主题的颜色可能变化, 提示一次
+    a = make_source(tmp_path / "a.xlsx")
+    b = make_source(tmp_path / "b.xlsx")
+    book = load_workbook(b["path"])
+    book.loaded_theme = theme_xml.replace("4F81BD", "FF1122")
+    book.save(b["path"])
+    book.close()
+    payload = {"paths": [a["path"], b["path"]], "selections": [a, b]}
+    report = merge_preview(payload)
+    assert report["can_export"], report
+    theme_warnings = [w for w in report["warnings"] if "主题" in w]
+    assert len(theme_warnings) == 1 and "以模板文件主题为准" in theme_warnings[0]
     out = tmp_path / "theme-result.xlsx"
     result = merge_export({**payload, "out": str(out)})
     assert result["warnings"]
