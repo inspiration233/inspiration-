@@ -1076,7 +1076,7 @@ def _transform(wb, target, s, group, retained, payload, issues, metadata_labels=
             if str(_value(ws, s["header_start"], i) or "").strip() in ("序号", "编号"):
                 serial_field = i
                 break
-        if serial_field is not None:
+        if serial_field is not None and payload.get("renumber_serial", True):
             counter, renumbered = 0, 0
             for record in sorted(group["records"]):
                 cell = ws._cells.get((record, serial_field))

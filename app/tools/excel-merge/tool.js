@@ -13,7 +13,7 @@
     const cellRef = (row, col) => colName(col) + row;
     const parseCell = raw => { const m = /^\$?([A-Z]+)\$?([1-9]\d*)$/i.exec(raw.trim()); if (!m) throw Error('请使用 A1 这样的单元格坐标。'); return { row: Number(m[2]), col: [...m[1].toUpperCase()].reduce((n, c) => n * 26 + c.charCodeAt(0) - 64, 0) }; };
     const parseRange = raw => { const parts = raw.trim().split(':'); if (parts.length > 2) throw Error('区域格式应为 A3:F4。'); const a = parseCell(parts[0]), b = parseCell(parts[1] || parts[0]); return { r1: Math.min(a.row, b.row), r2: Math.max(a.row, b.row), c1: Math.min(a.col, b.col), c2: Math.max(a.col, b.col) }; };
-    const defaults = () => ({ files: [], feedback: [], baseline: null, active: null, role: 'group', group: [], groupMode: 'combination', filters: [], outputFilters: [], filteredEnabled: false, filteredOptions: {resolutions:{}}, blankGroup: 'separate', outputFields: [], filteredFields: [], keys: [], updates: [], compares: [], groupField: null, resultForm: 'compare', sheetRoles: {}, resolutions: {}, retained: [], shared: [], options: { mode: 'auto', align: 'loose', shape: 'auto', templateIndex: 0, templateSheet: null, hidden: false, source: false, removeSummary: false, keywords: '合计,小计,总计,汇总,累计', stripSerial: true, minFillRatio: 20, renumber: true, title: false, exampleRows: true, retainAll: false }, result: null, payload: null, version: 0, previewVersion: -1, schemeProblems: [] });
+    const defaults = () => ({ files: [], feedback: [], baseline: null, active: null, role: 'group', group: [], groupMode: 'combination', filters: [], outputFilters: [], filteredEnabled: false, filteredOptions: {resolutions:{}}, blankGroup: 'separate', outputFields: [], filteredFields: [], keys: [], updates: [], compares: [], groupField: null, resultForm: 'compare', sheetRoles: {}, resolutions: {}, retained: [], shared: [], options: { mode: 'auto', align: 'loose', shape: 'auto', templateIndex: 0, templateSheet: null, hidden: false, source: false, removeSummary: false, keywords: '合计,小计,总计,汇总,累计', stripSerial: true, minFillRatio: 20, renumber: true, title: false, exampleRows: true, retainAll: false, renumberSerial: true }, result: null, payload: null, version: 0, previewVersion: -1, schemeProblems: [] });
     const sessions = { merge: defaults(), split: defaults(), reconcile: defaults() };
     sessions.reconcile.role = 'keys';
     const state = { mode: 'merge', busy: false, merging: false, disposed: false, gridRequest: 0, operationRequest: 0, picking: null, firstCorner: null, rangeDirty: false, offProgress: null };
@@ -329,6 +329,32 @@
           invalidate(); renderRoles(); renderToolbar(); if (cfg) renderGrid(cfg.report);
         };
         batch.append(clear);
+        // 范围输入: 直接填列号范围(如 3-8 或 C-H)一次选中一段
+        const rangeBox = make('span', 'range-pick');
+        const rangeInput = make('input');
+        rangeInput.type = 'text';
+        rangeInput.placeholder = '范围如 3-8';
+        rangeInput.style.cssText = 'width:80px;padding:3px 6px;font-size:12px;border:1px solid var(--hairline-2);border-radius:6px';
+        rangeInput.setAttribute('aria-label', '列范围');
+        const rangeBtn = make('button', 'ghost compact', '选这段');
+        const doRange = () => {
+          const text = rangeInput.value.trim();
+          const m = text.match(/^(\d+)\s*-\s*(\d+)$/) || text.match(/^([A-Za-z]+)\s*-\s*([A-Za-z]+)$/);
+          if (!m) { notice('范围格式：起始-结束，如 3-8 或 C-H。', true); return; }
+          let lo, hi;
+          if (/^\d+$/.test(m[1])) { lo = +m[1]; hi = +m[2]; }
+          else { lo = m[1].toUpperCase().charCodeAt(0) - 64; hi = m[2].toUpperCase().charCodeAt(0) - 64; }
+          if (lo > hi) [lo, hi] = [hi, lo];
+          const cfg = config(activeSource());
+          if (!cfg) return;
+          const n = addFieldIndexes(current(), lo, hi);
+          if (n) { commitFieldPick(cfg); notice(`已批量加入 ${n} 列。`); rangeInput.value = ''; }
+          else notice('该范围内没有可选的字段。', true);
+        };
+        rangeBtn.onclick = doRange;
+        rangeInput.onkeydown = ev => { if (ev.key === 'Enter') doRange(); };
+        rangeBox.append(rangeInput, rangeBtn);
+        batch.append(rangeBox);
         bar.append(batch);
       }
       // 选中反馈就在网格正上方——chips 区可能在屏幕外, 这里给即时可见的确认
@@ -458,7 +484,7 @@
       else unitBox.append(make('span','empty-chip','未选择 · 按主键值直接匹配（不分组）'));
       unitBox.append(unitGo);
       for(const [id,key] of [['key-chips','keys'],['update-chips','updates'],['compare-chips','compares'],['output-chips','outputFields'],['filtered-field-chips','filteredFields']]) chips(id,s[key],fieldChipLabel,i=>s[key].splice(i,1),key);
-      $('blank-group').value=s.blankGroup;$('split-example-rows').checked=!!s.options.exampleRows;$('split-retain-all').checked=!!s.options.retainAll;
+      $('blank-group').value=s.blankGroup;$('split-example-rows').checked=!!s.options.exampleRows;$('split-retain-all').checked=!!s.options.retainAll;$('split-renumber').checked=s.options.renumberSerial!==false;
       if(state.mode==='reconcile'){$('result-form').value=s.resultForm;$('result-form').onchange=()=>{s.resultForm=$('result-form').value;invalidate();};}
       $('group-by-sheet').checked=s.group.some(g=>g.kind==='sheet');$('group-mode').value=s.groupMode;
       renderToolbar();
@@ -552,7 +578,7 @@
       if(state.mode==='split'){
         if(!s.group.length)throw Error('请点选至少一个拆分字段，或选择命名单元格 / 工作表名。');
         for(const f of s.filters)if(!f.field||!String(f.value??'').trim()||(f.op==='interval'&&!f.end_field))throw Error('请补全筛选字段、条件值，以及区间条件的截止字段。');
-        return {...base,group_fields:s.group.map(g=>g.kind==='cell'?{kind:'cell',ref:g.ref}:clone(g)),group_mode:s.groupMode,blank_group:s.blankGroup,include_example_rows:!!s.options.exampleRows,retain_all_sheets:!!s.options.retainAll,...(s.outputFields.length?{output_fields:[...s.outputFields]}:{}),filters:clone(s.filters),retain_sheets:clone(s.retained),shared_label_ranges:clone(s.shared),resolutions:clone(s.resolutions),allow_warnings:false};
+        return {...base,group_fields:s.group.map(g=>g.kind==='cell'?{kind:'cell',ref:g.ref}:clone(g)),group_mode:s.groupMode,blank_group:s.blankGroup,include_example_rows:!!s.options.exampleRows,retain_all_sheets:!!s.options.retainAll,renumber_serial:s.options.renumberSerial!==false,...(s.outputFields.length?{output_fields:[...s.outputFields]}:{}),filters:clone(s.filters),retain_sheets:clone(s.retained),shared_label_ranges:clone(s.shared),resolutions:clone(s.resolutions),allow_warnings:false};
       }
       if(s.filteredEnabled){if(!s.outputFilters.length)throw Error('请为额外筛选结果至少添加一个条件。');for(const f of s.outputFilters)if(!f.field||!String(f.value??'').trim()||(f.op==='interval'&&!f.end_field))throw Error('请补全额外筛选结果的条件。');}
       if(!s.feedback.length)throw Error('请添加至少一份反馈文件。');if(!s.keys.length)throw Error('请选择用于对应同一条记录的字段。');if(!s.updates.length)throw Error('请选择允许回填的字段。');
@@ -820,7 +846,7 @@
     const page=(rowDelta,colDelta)=>{const source=activeSource(),cfg=config(source),s=current();if(!cfg)return;showSource(source,s.active.bucket,s.active.index,source.sheet,{row:Math.max(1,cfg.page.row+rowDelta),col:Math.max(1,cfg.page.col+colDelta)});};
     $('page-prev').onclick=()=>page(-80,0);$('page-next').onclick=()=>page(80,0);$('page-left').onclick=()=>page(0,-40);$('page-right').onclick=()=>page(0,40);
     $('jump-go').onclick=()=>{try{const destination=parseCell($('jump-cell').value),source=activeSource(),cfg=config(source),s=current();if(destination.row>cfg.report.max_row||destination.col>cfg.report.max_column)throw Error('这个坐标超出了工作表范围。');showSource(source,s.active.bucket,s.active.index,source.sheet,destination);}catch(error){fail(error);}};
-    $('group-by-sheet').onchange=()=>{const s=current();s.group=s.group.filter(g=>g.kind!=='sheet');if($('group-by-sheet').checked)s.group.push({kind:'sheet'});invalidate();renderRoles();};$('group-mode').onchange=()=>{current().groupMode=$('group-mode').value;invalidate();};$('blank-group').onchange=()=>{current().blankGroup=$('blank-group').value;invalidate();};$('split-example-rows').onchange=()=>{current().options.exampleRows=$('split-example-rows').checked;invalidate();};$('split-retain-all').onchange=()=>{current().options.retainAll=$('split-retain-all').checked;invalidate();};
+    $('group-by-sheet').onchange=()=>{const s=current();s.group=s.group.filter(g=>g.kind!=='sheet');if($('group-by-sheet').checked)s.group.push({kind:'sheet'});invalidate();renderRoles();};$('group-mode').onchange=()=>{current().groupMode=$('group-mode').value;invalidate();};$('blank-group').onchange=()=>{current().blankGroup=$('blank-group').value;invalidate();};$('split-example-rows').onchange=()=>{current().options.exampleRows=$('split-example-rows').checked;invalidate();};$('split-retain-all').onchange=()=>{current().options.retainAll=$('split-retain-all').checked;invalidate();};$('split-renumber').onchange=()=>{current().options.renumberSerial=$('split-renumber').checked;invalidate();};
     $('add-filter').onclick=()=>{current().filters.push({field:null,op:'equals',value:''});invalidate();renderFilters();};
     $('add-output-filter').onclick=()=>{current().outputFilters.push({field:null,op:'equals',value:''});invalidate();renderFilters();};$('filtered-enabled').onchange=()=>{current().filteredEnabled=$('filtered-enabled').checked;if(!current().filteredEnabled&&current().role==='filteredFields')current().role='keys';invalidate();renderFilters();renderRoles();};
     root.querySelectorAll('[name="merge-output"]').forEach(input=>input.onchange=()=>{current().options.mode=input.value;invalidate();recommend();});

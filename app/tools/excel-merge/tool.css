@@ -174,3 +174,7 @@ body.modal-open #stage{overflow:hidden}
 .excel-tool .changes-table .clear-kind{color:var(--warn)}
 .excel-tool .changes-table .fill-kind{color:var(--success)}
 .excel-tool .changes-table .clear-kind{color:var(--warn)}
+
+.excel-tool .range-pick{display:inline-flex;gap:4px;align-items:center}
+.excel-tool .range-pick input{outline:none}
+.excel-tool .range-pick input:focus{border-color:var(--accent)}
