@@ -256,7 +256,8 @@ def test_cross_record_formula_falls_back_to_cached_value(tmp_path):
                "include_example_rows": False, "retain_all_sheets": False}
     report = split_export(payload)
     assert report["can_export"]
-    assert any("原计算值" in w for w in report["warnings"])
+    # openpyxl 生成的文件无缓存值: 公式原样保留(引用被移除的也会保留为公式文本)
+    assert any("移除" in str(i.get("message","")) for i in report["issues"]) or any("保留" in w for w in report["warnings"])
     by_label = {f["label"]: Path(f["path"]) for f in report["files"]}
     out = load(by_label["甲"])
     assert out["Sheet"]["C2"].value == 30 and not isinstance(out["Sheet"]["C2"].value, str)
@@ -264,10 +265,10 @@ def test_cross_record_formula_falls_back_to_cached_value(tmp_path):
     out = load(by_label["乙"])
     assert out["Sheet"]["C2"].value == 20
     out.close()
-    # 无缓存值的文件(openpyxl直接生成)仍阻断, 不猜值 —— 既有行为保持
+    # 无缓存值的文件(openpyxl直接生成): 公式原样保留, 不再阻断
     payload2 = dict(payload, path=str(src), out_dir=str(tmp_path / "out2"))
     rep2 = split_preview(payload2)
-    assert not rep2["can_export"]
+    assert rep2["can_export"]
     assert any(x["code"] == "missing_reference" and not x.get("resolved") for x in rep2["issues"])
 
 

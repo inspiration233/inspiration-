@@ -671,20 +671,22 @@ def _rewrite(formula, owner, target, mapping, wb, retained, issues, location, gr
     if formula is None:
         return formula
     if not isinstance(formula, str):
-        issues.add("array_formula", "数组/数据表公式暂不能安全移动，请调整选择范围。", location, group)
+        issues.warn(f"数组/数据表公式 {location} 已按原样保留；"
+                    "拆分后引用范围可能变化，请在结果中核对。")
         return formula
     if _DYNAMIC_FUNCS.search(formula) and mapping.removed:
-        issues.add("dynamic_reference", "公式通过地址或行列位置动态取值，暂不能安全判断拆分后的含义。", location, group)
+        issues.warn(f"动态引用公式 {location}（OFFSET/INDIRECT 等）已按原样保留；"
+                    "拆分后取值位置可能变化，请在结果中核对。")
         return formula
     if _POSITION_FUNCS.search(formula) and mapping.removed:
         issues.scope(location, group, formula)
     if re.search(r'\bHYPERLINK\s*\(\s*"#', formula, re.I) and mapping.removed:
-        issues.add("hyperlink_formula", "公式中的文本超链接地址需要单独调整，暂不能安全移动。", location, group)
+        issues.warn(f"超链接公式 {location} 已按原样保留；链接目标可能需在结果中手动确认。")
     has_equals = formula.startswith("=")
     try:
         tokens = _tokens(formula)
     except Exception:
-        issues.add("formula_parse", "无法可靠解析公式，已停止导出。", location, group)
+        issues.warn(f"公式 {location} 无法解析，已按原样保留。")
         return formula
     out, names = [], _names(wb, wb[owner])
     seen = set() if seen is None else set(seen)
@@ -711,12 +713,14 @@ def _rewrite(formula, owner, target, mapping, wb, retained, issues, location, gr
                 try:
                     mapped, partial, empty = _map_reference(ref, mapping)
                 except ValueError:
-                    issues.add("unsupported_reference", f"暂不能安全移动引用：{value}", location, group)
+                    issues.add("unsupported_reference", f"暂不能安全移动引用：{value}",
+                               location, group, blocking=False)
                 else:
                     if empty:
-                        issues.add("missing_reference", f"引用 {value} 的全部单元格将被移除，不能替换成空值。", location, group)
+                        issues.add("missing_reference", f"引用 {value} 的全部单元格将被移除。",
+                                   location, group, blocking=False)
                     elif partial and not metadata and ":" not in ref:
-                        issues.add("missing_reference", f"引用 {value} 的单元格将被移除。", location, group)
+                        issues.warn(f"公式 {location} 引用的 {value} 部分被移除，已按原样保留。")
                     elif partial and not metadata:
                         if issues.scope(location, group, value):
                             value = prefix + mapped
@@ -1194,7 +1198,7 @@ def _object_issues(wb, retained, issues, path):
         if ws._pivots:
             objects.append("数据透视表")
         if objects:
-            issues.add("unsupported_object", f"“{name}”含{'、'.join(objects)}，当前不能保证拆分后引用与位置不变。", name)
+            issues.warn(f"“{name}”的{'、'.join(objects)}已丢弃（数据透视表、宏或嵌入对象在拆分结果中不保留）；单元格内容正常保留。")
         # 图片/图表改为保留: 锚点随记录平移、图表引用同步改写; 删空的丢弃并提示
         if ws._charts or ws._images:
             issues.warn(f"“{name}”的图片/图表将随结果保留：位置随拆分平移，图表数据引用同步改写；引用被删空的图表会丢弃。")

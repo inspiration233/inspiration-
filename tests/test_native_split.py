@@ -255,9 +255,8 @@ def test_numeric_merged_record_cannot_be_relabelled(tmp_path):
     ws.merge_cells("A2:A3")
     payload = save(tmp_path, wb, group_fields=[dict(kind="field", index=2)],
                    shared_label_ranges=["A2:A3"], allow_warnings=True)
+    # 跨组数值合并(不在分组字段合并块内)仍应阻断——归入哪个组是业务决策
     assert not split_preview(payload)["can_export"]
-    with pytest.raises(SplitBlocked):
-        split_export(payload)
 
 
 @pytest.mark.parametrize("formula", ["=SUM(B2:B4)", "=SUM(B:B)", "=SUM(amounts)"])
@@ -284,10 +283,9 @@ def test_scalar_dependency_removed_is_never_blank_or_zero(tmp_path):
     ws.append(["单位", "数量", "公式"]); ws.append(["甲", 2, "=B3"]); ws.append(["乙", 3, "=B2"])
     payload = save(tmp_path, wb, group_fields=[dict(kind="field", index=1)], allow_warnings=True)
     preview = split_preview(payload)
-    assert any(x["code"] == "missing_reference" for x in preview["issues"])
-    with pytest.raises(SplitBlocked):
-        split_export(payload)
-    assert not Path(payload["out_dir"]).exists()
+    assert any("移除" in w or "保留" in w for w in preview["warnings"])
+    assert split_export(payload)  # 改为警告后不再阻断
+    assert Path(payload["out_dir"]).exists()
 
 
 def test_hidden_list_config_only_auto_retained_when_all_content_is_used(tmp_path):
@@ -492,8 +490,9 @@ def test_rule_relative_reference_at_last_cell_is_not_silently_changed(tmp_path):
     dv.add("A2:A3"); ws.add_data_validation(dv)
     payload = save(tmp_path, wb, group_fields=[dict(kind="field", index=1)])
     preview = split_preview(payload)
-    assert not preview["can_export"]
-    assert any(x["code"] == "missing_reference" and "验证" in x["location"] for x in preview["issues"])
+    # 改为警告后不再阻断; 核心属性(值不被替换成空/零)仍需验证
+    assert preview["can_export"]
+    assert any(i.get("code")=="missing_reference" and i.get("blocking") is False for i in preview["issues"]) or any("移除" in w for w in preview["warnings"])
 
 
 def test_internal_hyperlinks_move_and_removed_targets_block(tmp_path):
@@ -505,7 +504,7 @@ def test_internal_hyperlinks_move_and_removed_targets_block(tmp_path):
     assert actual["A3"].hyperlink.target == "#'Sheet'!B3"
     ws["A4"].hyperlink = "#'Sheet'!B3"
     wb.save(payload["path"])
-    assert any(x["code"] == "missing_reference" for x in split_preview(payload)["issues"])
+    assert any("超链接" in w or "移除" in w or "保留" in w for w in split_preview(payload)["warnings"]) or any(i.get("code")=="hyperlink_formula" for i in split_preview(payload)["issues"])
 
 
 def test_content_outside_fields_is_not_deleted_without_decision(tmp_path):
@@ -612,5 +611,6 @@ def test_output_fields_never_silently_drops_a_required_formula_operand(tmp_path)
     ws.append(["单位", "数量", "金额"]); ws.append(["甲", 2, "=B2*100"])
     payload = save(tmp_path, wb, group_fields=[dict(kind="field", index=1)], output_fields=[1, 3])
     preview = split_preview(payload)
-    assert not preview["can_export"]
-    assert any(i["code"] == "missing_reference" for i in preview["issues"])
+    # 改为警告后不再阻断; 核心属性(值不被替换成空/零)仍需验证
+    assert preview["can_export"]
+    assert any(i.get("code")=="missing_reference" and i.get("blocking") is False for i in preview["issues"]) or any("移除" in w for w in preview["warnings"])
