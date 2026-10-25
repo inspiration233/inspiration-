@@ -535,6 +535,7 @@ def _inject_cached_serial(src0, dest, anchor, row_from, row_to, horizontal=False
     (<v> 缺失 / 自闭合 / 空标签), 用正则统一处理。"""
     import re as _re
     from zipfile import ZipFile as ZF
+    from openpyxl.utils import get_column_letter
     with ZF(src0) as zin, ZF(dest, "w") as zout:
         for name in zin.namelist():
             data = zin.read(name)
@@ -547,6 +548,6 @@ def _inject_cached_serial(src0, dest, anchor, row_from, row_to, horizontal=False
                 for ref, value in zip(targets, values):
                     formula = "COLUMN()-1" if horizontal else "ROW()-1"
                     text = _re.sub(rf'(<c r="{ref}"[^>]*><f[^>]*>{_re.escape(formula)}</f>)(<v\s*/>|<v></v>)?',
-                                   rf'<v>{value}</v>', text, count=1)
+                                   rf'\g<1><v>{value}</v>', text, count=1)
                 data = text.encode()
             zout.writestr(name, data)
