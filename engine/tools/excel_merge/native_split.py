@@ -1068,28 +1068,51 @@ def _transform(wb, target, s, group, retained, payload, issues, metadata_labels=
     _metadata(ws, mapping, context)
     _map_dimensions(ws, mapping)
     _map_drawings(ws, mapping, context)
-    if mapping.axis == "rows":
-        # 序号列连续重排(每组从1): 数值序号与公式序号(=ROW()-N 在行压缩后会
-        # 漂移甚至为负)一律重排为连续数字; 文本序号(如"例1")保留原值不计数
-        serial_field = None
-        for i in range(s["field_start"], s["field_end"] + 1):
-            if str(_value(ws, s["header_start"], i) or "").strip() in ("序号", "编号"):
-                serial_field = i
-                break
-        if serial_field is not None and payload.get("renumber_serial", True):
-            counter, renumbered = 0, 0
-            for record in sorted(group["records"]):
-                cell = ws._cells.get((record, serial_field))
-                v = cell.value if cell is not None else None
-                if v is None or v == "":
-                    continue
-                if isinstance(v, (int, float)) or (isinstance(v, str) and v.strip().isdigit())                         or (isinstance(v, str) and v.strip().startswith("=")):
-                    counter += 1
-                    if cell is not None and v != counter:
-                        cell.value = counter
-                    renumbered += 1
-            if counter:
-                issues.warn("序号列已按本组记录从 1 连续重排（文本序号保留原值）。")
+    # 序号列处理(纵/横对称): 公式序号(=ROW()-N / =COLUMN()-N)在记录压缩后会
+    # 漂移甚至为负, 一律转为拆分前的显示值; 数值序号默认保留原值(回收后按原
+    # 序号回填对位), 仅 renumber_serial 开启时按本组记录从 1 连续重排(第一个序号列);
+    # 文本序号(如"例1")始终保留原值不计数。表头在 header_start..header_end
+    # 区间内任一行标注"序号/编号"即认。键不全的轻量 selection(输出字段切片
+    # 的第二次变换)不做序号处理——主 selection 那一遍已处理过。
+    if all(k in s for k in ("header_start", "header_end", "field_start", "field_end")):
+        if mapping.axis == "rows":
+            serial_fields = [i for i in range(s["field_start"], s["field_end"] + 1)
+                             if any(str(_value(ws, h, i) or "").strip() in ("序号", "编号")
+                                    for h in range(s["header_start"], s["header_end"] + 1))]
+            coord = lambda f, r: (r, f)
+        else:
+            serial_fields = [i for i in range(s["field_start"], s["field_end"] + 1)
+                             if any(str(_value(ws, i, h) or "").strip() in ("序号", "编号")
+                                    for h in range(s["header_start"], s["header_end"] + 1))]
+            coord = lambda f, r: (f, r)
+        if serial_fields:
+            formulas = 0
+            for serial_field in serial_fields:
+                for record in sorted(group["records"]):
+                    cell = ws._cells.get(coord(serial_field, record))
+                    if cell is None or cell.value is None:
+                        continue
+                    if not (isinstance(cell.value, str) and cell.value.strip().startswith("=")):
+                        continue
+                    cached = cached_read(target, cell.coordinate)
+                    if cached not in (None, ""):
+                        cell.value = cached
+                        formulas += 1
+            if formulas:
+                issues.warn(f"序号列为公式，已转为拆分前的显示值（{formulas} 格）。")
+            if payload.get("renumber_serial", False):
+                counter = 0
+                for record in sorted(group["records"]):
+                    cell = ws._cells.get(coord(serial_fields[0], record))
+                    v = cell.value if cell is not None else None
+                    if v is None or v == "":
+                        continue
+                    if isinstance(v, (int, float)) or (isinstance(v, str) and v.strip().isdigit())                     or (isinstance(v, str) and v.strip().startswith("=")):
+                        counter += 1
+                        if cell is not None and v != counter:
+                            cell.value = counter
+                if counter:
+                    issues.warn("序号列已按本组记录从 1 连续重排（文本序号保留原值）。")
     for owner in retained:
         # Rules on retained pages can also refer back to the filtered sheet.
         if owner != target:
@@ -1356,13 +1379,21 @@ def _inject_extras(out, extras):
 
 def _prepare(payload, cancel=None):
     path = Path(payload["path"]).expanduser().resolve()
-    if path.suffix.lower() != ".xlsx":
-        raise ValueError("原生拆分只支持 .xlsx；请先在 Excel 中另存为 .xlsx")
     if not path.is_file():
         raise ValueError("源文件不存在")
     if cancel and cancel():
         raise Cancelled()
     issues = _Issues(payload)
+    if path.suffix.lower() in (".csv", ".xls"):
+        # csv/xls 统一转 xlsx 后拆分(识别/属性/回填闭环与 xlsx 一致), 产物为 xlsx
+        from .plain_import import to_xlsx
+        converted, notes = to_xlsx(path)
+        for note in notes:
+            issues.warn(note)
+        payload["_source_name"] = path.name        # 溯源属性里记录原始文件名
+        path = Path(converted)
+    elif path.suffix.lower() != ".xlsx":
+        raise ValueError("拆分支持 .xlsx、.xls 和 .csv")
     wb = _load(path, issues)
     try:
         sheet = payload.get("sheet") or wb.active.title
@@ -1432,6 +1463,67 @@ def _safe_name(label):
     return name
 
 
+def _build_split_meta(path, sheet, selection):
+    """拆分溯源信息: 每列的绝对列号与拆分时的表头文本快照 + 结构区间 + 底稿标识。
+    回填读到它且逐列表头与快照一致时, 直接按列号绝对对应——重名列、表头行数
+    识别漂移全部免疫; 任一列不符说明反馈被动过列, 回退标题匹配。"""
+    issues = _Issues({"path": str(path)})
+    wb = _load(path, issues)
+    try:
+        ws = wb[sheet]
+        columns = {}
+        for col in range(selection["field_start"], selection["field_end"] + 1):
+            parts = []
+            for h in range(selection["header_start"], selection["header_end"] + 1):
+                value = _value(ws, h, col) if selection["axis"] == "rows" else _value(ws, col, h)
+                if value not in (None, ""):
+                    parts.append(str(value).strip())
+            columns[str(col)] = "/".join(parts)
+        return {"version": 1, "base_file": Path(path).name, "sheet": sheet,
+                "selection": {k: selection[k] for k in
+                              ("axis", "header_start", "header_end", "field_start", "field_end")},
+                "columns": columns}
+    finally:
+        wb.close()
+
+
+def _write_split_meta(target, meta):
+    """把溯源信息写进产物自定义文档属性(WPS/Excel 编辑保存、另存为均保留, 已实测)。"""
+    from xml.sax.saxutils import escape
+    text = escape(json.dumps(meta, ensure_ascii=False))
+    # vt 命名空间声明带在元素上: openpyxl 回写的 custom.xml 根元素不带该声明
+    prop = ('<property fmtid="{D5CDD505-2E9C-101B-9397-08002B2CF9AE}" pid="99001" name="TOOLBOX_SPLIT">'
+            '<vt:lpwstr xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes">'
+            f'{text}</vt:lpwstr></property>')
+    with ZipFile(target) as zin:
+        parts = {name: zin.read(name) for name in zin.namelist()}
+    content_types = parts.get("[Content_Types].xml", b"").decode("utf-8")
+    if "custom-properties" not in content_types:
+        parts["[Content_Types].xml"] = content_types.replace(
+            "</Types>", '<Override PartName="/docProps/custom.xml" ContentType='
+                        '"application/vnd.openxmlformats-officedocument.custom-properties+xml"/></Types>'
+        ).encode("utf-8")
+    rels = parts.get("_rels/.rels", b"").decode("utf-8")
+    if "custom-properties" not in rels:
+        parts["_rels/.rels"] = rels.replace(
+            "</Relationships>", '<Relationship Id="rIdToolboxSplit" Type='
+                                '"http://schemas.openxmlformats.org/officeDocument/2006/relationships/custom-properties" '
+                                'Target="docProps/custom.xml"/></Relationships>').encode("utf-8")
+    existing = parts.get("docProps/custom.xml", b"").decode("utf-8")
+    if not existing:
+        parts["docProps/custom.xml"] = (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/custom-properties" '
+            'xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes">'
+            + prop + "</Properties>").encode("utf-8")
+    elif "TOOLBOX_SPLIT" not in existing:
+        parts["docProps/custom.xml"] = existing.replace(
+            "</Properties>", prop + "</Properties>").encode("utf-8")
+    with ZipFile(target, "w", ZIP_DEFLATED) as zout:
+        for name, data in parts.items():
+            zout.writestr(name, data)
+
+
 def split_export(payload, cancel=None, progress=None):
     """Export new files, never overwrite, and remove this call's outputs on failure.
 
@@ -1443,6 +1535,9 @@ def split_export(payload, cancel=None, progress=None):
     if not preview["can_export"]:
         raise SplitBlocked(preview)
     extras = _package_extras(path)
+    split_meta = _build_split_meta(path, sheet, selection)
+    if payload.get("_source_name"):
+        split_meta["base_file"] = payload["_source_name"]
     out_dir = Path(payload.get("out_dir") or path.parent / "拆分结果").expanduser().resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
     created, temporary = [], []
@@ -1480,6 +1575,7 @@ def split_export(payload, cancel=None, progress=None):
             finally:
                 wb.close()
             _inject_extras(temp, dict(extras))
+            _write_split_meta(temp, split_meta)
             try:
                 validate_xlsx(temp)
             except ValueError as error:

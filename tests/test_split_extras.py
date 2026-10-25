@@ -310,7 +310,7 @@ def test_dependency_issue_not_duplicated_and_formula_stays_live(tmp_path):
 
 
 def test_serial_renumbered_from_one_per_group(tmp_path):
-    """拆分后序号每组从1连续重排(含公式序号); 文本序号保留。"""
+    """开启 renumber_serial 时序号每组从1连续重排; 文本序号保留。"""
     from openpyxl import Workbook
     from zipfile import ZipFile as ZF
     src0 = tmp_path / "s0.xlsx"
@@ -346,7 +346,8 @@ def test_serial_renumbered_from_one_per_group(tmp_path):
                "group_fields": [{"kind": "field", "index": 2}],
                "group_mode": "combination", "blank_group": "separate",
                "filters": [], "resolutions": {}, "out_dir": str(tmp_path / "out"),
-               "include_example_rows": False, "retain_all_sheets": False}
+               "include_example_rows": False, "retain_all_sheets": False,
+               "renumber_serial": True}
     report = split_export(payload)
     assert any("连续重排" in w for w in report["warnings"])
     by_label = {f["label"]: Path(f["path"]) for f in report["files"]}
@@ -357,3 +358,193 @@ def test_serial_renumbered_from_one_per_group(tmp_path):
     out = load(by_label["甲"])
     assert out["数据"]["A2"].value == 1
     out.close()
+
+
+def test_serial_kept_original_by_default(tmp_path):
+    """默认不重排: 数值序号保留底稿原值, 公式序号转为拆分前的显示值——回收后按原序号回填对位。"""
+    from openpyxl import Workbook
+    from zipfile import ZipFile as ZF
+    src0 = tmp_path / "k0.xlsx"
+    wb = Workbook(); ws = wb.active; ws.title = "数据"
+    ws.append(["序号", "单位", "数量"])
+    for i, u in enumerate(["甲", "乙", "乙", "乙"], start=2):
+        ws.append([f"=ROW()-1", u, i])
+    wb.save(src0); wb.close()
+    src = tmp_path / "带缓存.xlsx"          # 注入缓存值 1,2,3,4
+    with ZF(src0) as zin, ZF(src, "w") as zout:
+        for name in zin.namelist():
+            data = zin.read(name)
+            if name == "xl/worksheets/sheet1.xml":
+                text = data.decode()
+                for i in range(2, 6):
+                    text = text.replace(f'<c r="A{i}"><f>ROW()-1</f><v></v></c>',
+                                        f'<c r="A{i}"><f>ROW()-1</f><v>{i - 1}</v></c>', 1)
+                data = text.encode()
+            zout.writestr(name, data)
+    payload = {"path": str(src), "sheet": "数据",
+               "selection": {"axis": "rows", "header_start": 1, "header_end": 1,
+                             "data_start": 2, "data_end": 5, "field_start": 1, "field_end": 3},
+               "group_fields": [{"kind": "field", "index": 2}],
+               "group_mode": "combination", "blank_group": "separate",
+               "filters": [], "resolutions": {}, "out_dir": str(tmp_path / "out"),
+               "include_example_rows": False, "retain_all_sheets": False}
+    report = split_export(payload)
+    assert not any("连续重排" in w for w in report["warnings"])
+    assert any("转为拆分前的显示值" in w for w in report["warnings"])
+    by_label = {f["label"]: Path(f["path"]) for f in report["files"]}
+    out = load(by_label["乙"])
+    serials = [out["数据"].cell(r, 1).value for r in range(2, 5)]
+    assert serials == [2, 3, 4], serials    # 底稿原序号原样保留, 回填按值即能对位
+    out.close()
+    out = load(by_label["甲"])
+    assert out["数据"]["A2"].value == 1
+    out.close()
+
+
+def test_horizontal_serial_formula_frozen_to_cached(tmp_path):
+    """横向表对称: 序号沿记录列方向的公式(=COLUMN()-N)拆分后同样漂移, 默认转为拆分前显示值。"""
+    from openpyxl import Workbook
+    from openpyxl.utils import get_column_letter
+    from zipfile import ZipFile as ZF
+    src0 = tmp_path / "h0.xlsx"
+    wb = Workbook(); ws = wb.active; ws.title = "数据"
+    ws["A1"], ws["A2"], ws["A3"] = "序号", "单位", "数量"
+    for c, unit in enumerate(["甲", "乙", "乙", "乙"], start=2):
+        ws.cell(1, c).value = "=COLUMN()-1"
+        ws.cell(2, c).value = unit
+        ws.cell(3, c).value = c * 10
+    wb.save(src0); wb.close()
+    src = tmp_path / "带缓存.xlsx"          # 注入缓存值 1..4
+    with ZF(src0) as zin, ZF(src, "w") as zout:
+        for name in zin.namelist():
+            data = zin.read(name)
+            if name == "xl/worksheets/sheet1.xml":
+                text = data.decode()
+                for c in range(2, 6):
+                    col = get_column_letter(c)
+                    text = text.replace(f'<c r="{col}1"><f>COLUMN()-1</f><v></v></c>',
+                                        f'<c r="{col}1"><f>COLUMN()-1</f><v>{c - 1}</v></c>', 1)
+                data = text.encode()
+            zout.writestr(name, data)
+    payload = {"path": str(src), "sheet": "数据",
+               "selection": {"axis": "columns", "header_start": 1, "header_end": 1,
+                             "data_start": 2, "data_end": 5, "field_start": 1, "field_end": 3},
+               "group_fields": [{"kind": "field", "index": 2}],
+               "group_mode": "combination", "blank_group": "separate",
+               "filters": [], "resolutions": {}, "out_dir": str(tmp_path / "out"),
+               "include_example_rows": False, "retain_all_sheets": False}
+    report = split_export(payload)
+    assert any("转为拆分前的显示值" in w for w in report["warnings"])
+    by_label = {f["label"]: Path(f["path"]) for f in report["files"]}
+    out = load(by_label["乙"])
+    serials = [out["数据"].cell(1, c).value for c in range(2, 5)]
+    assert serials == [2, 3, 4], serials    # 底稿原序号原样保留
+    out.close()
+
+
+def test_split_export_writes_column_meta(tmp_path):
+    """拆分产物写入 TOOLBOX_SPLIT 溯源属性: 列号→表头快照+结构区间。"""
+    import json
+    import re as _re
+    from zipfile import ZipFile as ZF2
+    src = tmp_path / "m.xlsx"
+    _book_into(src)
+    payload = {"path": str(src), "sheet": "数据",
+               "selection": {"axis": "rows", "header_start": 1, "header_end": 1,
+                             "data_start": 2, "data_end": 11, "field_start": 1, "field_end": 3},
+               "group_fields": [{"kind": "field", "index": 2}],
+               "group_mode": "combination", "blank_group": "separate",
+               "filters": [], "resolutions": {}, "out_dir": str(tmp_path / "out"),
+               "include_example_rows": False, "retain_all_sheets": False}
+    report = split_export(payload)
+    out = report["files"][0]["path"]
+    with ZF2(out) as z:
+        assert "docProps/custom.xml" in z.namelist()
+        raw = z.read("docProps/custom.xml").decode("utf-8")
+    m = _re.search(r'name="TOOLBOX_SPLIT"[^>]*><vt:lpwstr[^>]*>(.*?)</vt:lpwstr>', raw, _re.S)
+    meta = json.loads(m.group(1))
+    assert meta["columns"]["1"] == "序号" and meta["columns"]["2"] == "分组"
+    assert meta["selection"]["header_start"] == 1 and meta["sheet"] == "数据"
+
+
+def _book_into(path):
+    from openpyxl import Workbook
+    wb = Workbook(); ws = wb.active; ws.title = "数据"
+    ws.append(["序号", "分组", "数值"])
+    for i in range(1, 11):
+        ws.append([i, "甲" if i % 2 else "乙", i * 10])
+    wb.save(path); wb.close()
+
+
+def test_csv_split_end_to_end(tmp_path):
+    """CSV 拆分: GBK 编码识别→拆分→产物为xlsx且带溯源属性(base_file=原始csv名)。"""
+    from openpyxl import load_workbook
+    from zipfile import ZipFile as ZF3
+    import re as _re3
+    import json as _json3
+    from engine.tools.excel_merge.preview import preview
+    from engine.tools.excel_merge.native_split import split_export
+    src = tmp_path / "单位数据.csv"
+    rows = ["序号,单位名称,金额,状态"] + [f"{i},单位{i % 3},{i * 10},进行中" for i in range(1, 10)]
+    src.write_text("\r\n".join(rows), encoding="gbk", newline="")
+    report = preview({"path": str(src)})
+    assert report["fields"][0]["label"] == "序号" and report["fields"][1]["label"] == "单位名称"
+    rep = split_export({"path": str(src), "sheet": "数据", "selection": report["selection"],
+                        "group_fields": [{"kind": "field", "index": 2}],
+                        "group_mode": "combination", "blank_group": "separate",
+                        "filters": [], "resolutions": {}, "out_dir": str(tmp_path / "out"),
+                        "include_example_rows": False, "retain_all_sheets": False})
+    assert len(rep["files"]) == 3
+    out = Path(rep["files"][0]["path"])
+    assert out.suffix == ".xlsx"
+    wb = load_workbook(out)
+    data = [(wb.active.cell(r, 1).value, wb.active.cell(r, 2).value) for r in range(1, wb.active.max_row + 1)]
+    assert data[0] == ("序号", "单位名称") and len([d for d in data[1:] if d[0]]) == 3
+    wb.close()
+    with ZF3(out) as z:
+        raw = z.read("docProps/custom.xml").decode("utf-8")
+    meta = _json3.loads(_re3.search(r'name="TOOLBOX_SPLIT"[^>]*><vt:lpwstr[^>]*>(.*?)</vt:lpwstr>',
+                                    raw, _re3.S).group(1))
+    assert meta["base_file"] == "单位数据.csv" and meta["columns"]["2"] == "单位名称"
+    assert any("CSV" in w for w in rep["warnings"])
+
+
+def test_xls_split_preserves_values_and_merges(tmp_path):
+    """XLS 拆分(第一步): 值/合并单元格/数字正确转入, 产物为xlsx带属性, 警告说明样式尽力。"""
+    import xlwt
+    from openpyxl import load_workbook
+    from engine.tools.excel_merge.preview import preview
+    from engine.tools.excel_merge.native_split import split_export
+    src = tmp_path / "legacy.xls"
+    book = xlwt.Workbook()
+    sh = book.add_sheet("计划")
+    heads = ["序号", "单位", "金额"]
+    for c, h in enumerate(heads):
+        sh.write(0, c, h)
+    sh.write(1, 0, 1); sh.write(1, 1, "甲"); sh.write(1, 2, 10.5)
+    sh.write(2, 0, 2); sh.write(2, 1, "甲"); sh.write(2, 2, 20.5)
+    sh.write(3, 0, 3); sh.write(3, 1, "乙"); sh.write(3, 2, 30.5)
+    sh.write_merge(4, 5, 1, 1, "合并区")          # 纵向合并(数据区内)
+    book.save(str(src))
+    report = preview({"path": str(src)})
+    assert report["fields"][1]["label"] == "单位"
+    rep = split_export({"path": str(src), "sheet": "计划", "selection": report["selection"],
+                        "group_fields": [{"kind": "field", "index": 2}],
+                        "group_mode": "combination", "blank_group": "separate",
+                        "filters": [], "resolutions": {}, "out_dir": str(tmp_path / "out"),
+                        "include_example_rows": False, "retain_all_sheets": False})
+    assert len(rep["files"]) >= 2 and any("XLS" in w for w in rep["warnings"])
+    for f in rep["files"]:
+        assert Path(f["path"]).suffix == ".xlsx"
+    wb = load_workbook(rep["files"][0]["path"])
+    values = [wb.active.cell(r, 1).value for r in range(1, wb.active.max_row + 1)]
+    assert 1 in values and values[0] == "序号"
+    wb.close()
+    # 合并区随所属组("合并区"值成组)进入对应产物
+    found = False
+    for f in rep["files"]:
+        w = load_workbook(f["path"])
+        if any(str(m).startswith("B") for m in w.active.merged_cells.ranges):
+            found = True
+        w.close()
+    assert found

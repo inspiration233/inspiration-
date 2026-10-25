@@ -360,8 +360,11 @@ def test_cancel_rolls_back_only_this_export_and_existing_files_survive(tmp_path)
 
 
 def test_non_xlsx_and_unsafe_names_and_invalid_axis(tmp_path):
-    with pytest.raises(ValueError, match=".xlsx"):
-        split_preview(dict(path=str(tmp_path / "legacy.xls")))
+    with pytest.raises(ValueError, match="不存在"):
+        split_preview(dict(path=str(tmp_path / "legacy.xls")))      # 不存在的文件先报不存在
+    (tmp_path / "legacy.txt").write_text("x", encoding="utf-8")
+    with pytest.raises(ValueError, match="拆分支持"):
+        split_preview(dict(path=str(tmp_path / "legacy.txt")))      # txt 仍不支持
     wb = Workbook(); ws = wb.active
     ws.append(["单位"]); ws.append(["../../危险:*?"]); ws.append(["CON"])
     payload = save(tmp_path, wb, group_fields=[dict(kind="field", index=1)])

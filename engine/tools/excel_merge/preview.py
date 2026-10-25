@@ -207,7 +207,14 @@ def preview(payload):
         raise ValueError("文件不存在")
     wb = cached = None
     warnings = []
+    converted = None
     try:
+        if path.suffix.lower() in (".csv", ".xls"):
+            # csv/xls 统一转成 xlsx 走原生链路: 识别/选列/范围与 xlsx 一致
+            from .plain_import import to_xlsx
+            converted, notes = to_xlsx(path)
+            path = Path(converted)
+            warnings.extend(notes)
         if path.suffix.lower() == ".xlsx":
             wb = load_workbook(path, data_only=False)
             cached = load_workbook(path, data_only=True, read_only=True)
@@ -228,6 +235,7 @@ def preview(payload):
             recognition = {"low_confidence": False, "orientation_confident": True, "warnings": []}
         else:
             suggested, recognition = _suggest(path, ws.title, ws.max_row, ws.max_column, cached)
+            suggested = _apply_split_meta(suggested, path, ws)
         recognition["confirmed"] = origin == "manual"
         warnings.extend(recognition["warnings"])
         selection = normalize_selection(payload.get("selection") if origin == "manual" else None,
@@ -270,3 +278,64 @@ def preview(payload):
             cached.close()
         if wb:
             wb.close()
+
+def _split_meta(path):
+    """读取拆分时写进自定义属性的溯源信息(列对应表); 非本工具拆分产物返回 None。
+    用标准 XML 解析取值——Excel/WPS 保存时会重打包并按自己的风格重写 custom.xml
+    (属性顺序/命名空间前缀/转义/空白都可能变), 正则匹配会静默失配。"""
+    import json
+    import re
+    import xml.etree.ElementTree as ET
+    from zipfile import ZipFile
+    try:
+        with ZipFile(str(path)) as archive:
+            if "docProps/custom.xml" not in archive.namelist():
+                return None
+            raw = archive.read("docProps/custom.xml")
+    except Exception:
+        return None
+    payload = None
+    try:
+        for prop in ET.fromstring(raw).iter():
+            if prop.tag.rsplit("}", 1)[-1] == "property" and prop.get("name") == "TOOLBOX_SPLIT":
+                for child in prop:
+                    if child.text:
+                        payload = child.text
+                        break
+    except ET.ParseError:
+        payload = None
+    if payload is None:                      # 极端格式退回正则兜底
+        text = raw.decode("utf-8", "ignore")
+        m = re.search(r'name="TOOLBOX_SPLIT"[^>]*>(.*?)</property>', text, re.S)
+        if m:
+            m2 = re.search(r">([^<>]*\{[^<>]*)", m.group(1), re.S)
+            payload = m2.group(1) if m2 else None
+    if not payload:
+        return None
+    try:
+        meta = json.loads(payload)
+    except ValueError:
+        return None
+    return meta if isinstance(meta, dict) and isinstance(meta.get("columns"), dict) else None
+
+
+def _apply_split_meta(suggested, path, ws):
+    """本工具拆分产物带拆分时的结构区间: 表头/字段范围按拆分时的用。
+    每组只剩几行数据的产物, 自动识别常把多级表头判成单行(字段丢掉上一级),
+    与底稿的对应表签名全部失配——按拆分区间识别即恢复一致。"""
+    meta = _split_meta(path)
+    if not meta or not suggested or meta.get("sheet") != ws.title:
+        return suggested
+    ms = meta.get("selection") or {}
+    keys = ("header_start", "header_end", "field_start", "field_end")
+    if not all(isinstance(ms.get(k), int) for k in keys):
+        return suggested
+    if suggested.get("axis") != ms.get("axis", suggested.get("axis")):
+        return suggested
+    limit = ws.max_column if suggested["axis"] == "rows" else ws.max_row
+    fixed = dict(suggested, header_start=ms["header_start"], header_end=ms["header_end"],
+                 field_start=ms["field_start"], field_end=min(ms["field_end"], limit),
+                 data_start=ms["header_end"] + 1)
+    if fixed["data_end"] < fixed["data_start"]:
+        fixed["data_end"] = fixed["data_start"]
+    return fixed

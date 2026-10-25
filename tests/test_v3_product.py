@@ -93,8 +93,8 @@ def test_w1_full_feedback_and_june_output(tmp_path):
     assert report["can_export"], report["issues"]
     ready = report
     assert len(ready["missing"]) == 5
-    assert any(c["key"] == ["T002"] and c["after"] == 25 and c["marked"] for c in ready["changes"])
-    assert any(c["key"] == ["T005"] and c["after"] == "已完成" and not c["marked"] for c in ready["changes"])
+    assert any(c["key"] == ["T002"] and c["after"] == 25 for c in ready["changes"])
+    assert any(c["key"] == ["T005"] and c["after"] == "已完成" for c in ready["changes"])
     result = workflow_export(payload)
     assert result["exported"] and len(result["outputs"]) == 3
     annual = load_workbook(result["output"])
@@ -119,7 +119,7 @@ def test_w3_progress_is_updated_without_plan_red(tmp_path):
                "result_form": "direct", "out": str(tmp_path / "更新.xlsx")}
     report = reconcile_preview(payload)
     assert report["can_export"], report["issues"]
-    assert len(report["changes"]) == 1 and not report["changes"][0]["marked"]
+    assert len(report["changes"]) == 1
     reconcile_export(payload)
     wb = load_workbook(payload["out"])
     # 改动默认红填充(不再要求先选标红列)

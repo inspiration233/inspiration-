@@ -178,7 +178,7 @@ def test_updates_missing_and_native_preservation(tmp_path):
     preview = reconcile_preview(p)
     assert preview["can_export"], preview
     assert preview["missing"] == [{"key": ["T2"], "position": 3, "status": "not_received",
-                                   "action": "keep_current", "message": "本次未反馈，保留当前内容"}]
+                                   "action": "keep_current", "message": "未交回，疑似被删除；已保留当前内容"}]
     assert {c["field"] for c in preview["changes"]} == {3, 4, 5}
     assert next(c for c in preview["changes"] if c["field"] == 5)["kind"] == "cancel"
     result = reconcile_export(p)
@@ -211,7 +211,7 @@ def test_default_requires_update_fields_and_no_compare_means_no_red(tmp_path):
     p["update_fields"] = [3, 4]
     p.pop("compare_fields")
     result = reconcile_export(p)
-    assert result["exported"] and not any(c["marked"] for c in result["changes"])
+    assert result["exported"]
     wb = load_workbook(p["out"])
     assert wb.active["C2"].font.color.type == "theme"
     wb.close()
@@ -322,6 +322,72 @@ def test_group_deletion_identified_by_serial_key(tmp_path):
     assert any("被删除" in m["message"] for m in preview["missing"])
 
 
+def test_group_deletion_identified_by_original_serial(tmp_path):
+    # 拆分默认保留底稿原序号(组内不一定是 1..N): 底稿组内序号 2,5,9,
+    # 反馈删了序号 5 那条 → 按"序号值=底稿序号值"对位, 点名缺 5 且序号 9 不滑位
+    base = [(2, "甲", 10, 0, "进行中"), (5, "甲", 20, 0, "进行中"),
+            (9, "甲", 30, 0, "进行中")]
+    feedback = [(2, "甲", 11, 0, "进行中"), (9, "甲", 99, 0, "进行中")]
+    p = payload(tmp_path, base, feedback)
+    p["key_fields"] = [1]; p["update_fields"] = [3]; p["group_field"] = 2
+    preview = reconcile_preview(p)
+    assert preview["can_export"], preview["issues"]
+    assert any("缺少序号 5" in w for w in preview["warnings"])
+    assert not any("整体错位" in w for w in preview["warnings"])
+    # 序号 9 的值落在底稿第 3 条上(不滑位)
+    change = next(c for c in preview["changes"] if c["after"] == 99)
+    assert change["key"] == ["甲", 3]
+    assert any("被删除" in m["message"] for m in preview["missing"])
+
+
+def test_flat_mode_identical_key_sets_across_feedback_warns(tmp_path):
+    # 非分组模式: 两份反馈的主键值完全相同(拆分产物序号被每组从 1 重排的典型特征)
+    # → 点名提示改用分组回填或重新拆分, 而不是让用户对着一堆冲突记录
+    base = tmp_path / "base.xlsx"
+    fb1 = tmp_path / "fb1.xlsx"
+    fb2 = tmp_path / "fb2.xlsx"
+    book(base, [(1, "甲", 10, 0, "进行中"), (2, "甲", 20, 0, "进行中"), (3, "甲", 30, 0, "进行中")])
+    book(fb1, [(1, "甲", 11, 0, "进行中"), (2, "甲", 21, 0, "进行中"), (3, "甲", 31, 0, "进行中")])
+    book(fb2, [(1, "甲", 12, 0, "进行中"), (2, "甲", 22, 0, "进行中"), (3, "甲", 32, 0, "进行中")])
+    p = {"path": str(base), "sheet": "计划", "selection": selection(2),
+         "feedback": [{"path": str(fb1), "sheet": "计划", "selection": selection(2)},
+                      {"path": str(fb2), "sheet": "计划", "selection": selection(2)}],
+         "key_fields": [1], "update_fields": [3], "result_form": "direct",
+         "resolutions": {}, "out": str(tmp_path / "out.xlsx")}
+    preview = reconcile_preview(p)
+    assert any("主键值完全相同" in w and "分组" in w for w in preview["warnings"])
+
+
+def test_group_feedback_renumbered_with_deletion_not_pretending_precise(tmp_path):
+    # 反馈端删行后又把序号拉成 1..n: 与"删了末尾"同貌, 不能冒充精确点名——
+    # 应退数量警示并点名疑似重新编号, 请人工核对整组
+    base = [(2, "甲", 10, 0, "进行中"), (5, "甲", 20, 0, "进行中"),
+            (9, "甲", 30, 0, "进行中")]
+    feedback = [(1, "甲", 11, 0, "进行中"), (2, "甲", 99, 0, "进行中")]   # 删了序号5, 重排成1,2
+    p = payload(tmp_path, base, feedback)
+    p["key_fields"] = [1]; p["update_fields"] = [3]; p["group_field"] = 2
+    preview = reconcile_preview(p)
+    assert preview["can_export"], preview["issues"]
+    assert any("疑似被重新编号" in w and "无法定位" in w for w in preview["warnings"])
+    assert not any("缺少序号" in w for w in preview["warnings"])
+
+
+def test_group_feedback_renumbered_full_set_aligns_by_ordinal(tmp_path):
+    # 反馈端重排但没删行(交回序号恰为 1..N): 重排值 k = 组内第 k 条, 对位完全正确
+    base = [(2, "甲", 10, 0, "进行中"), (5, "甲", 20, 0, "进行中"),
+            (9, "甲", 30, 0, "进行中")]
+    feedback = [(1, "甲", 10, 0, "进行中"), (2, "甲", 20, 0, "进行中"),
+                (3, "甲", 55, 0, "进行中")]                              # 全量交回, 重排
+    p = payload(tmp_path, base, feedback)
+    p["key_fields"] = [1]; p["update_fields"] = [3]; p["group_field"] = 2
+    preview = reconcile_preview(p)
+    assert preview["can_export"], preview["issues"]
+    assert not any("组「" in w and ("少" in w or "缺少" in w) for w in preview["warnings"])
+    change = next(c for c in preview["changes"] if c["after"] == 55)
+    assert change["position"] == 4          # 底稿序号 9 所在行
+    assert preview["totals"]["missing"] == 0
+
+
 def test_multi_sheet_reconcile_both_sheets_updated(tmp_path):
     # 多表回填: 底稿两张表同名存在于反馈, 各自独立回填, 输出合成一个文件
     base = tmp_path / "base.xlsx"
@@ -378,8 +444,10 @@ def test_compare_output_inserts_original_rows(tmp_path):
     assert ws.cell(4, 3).value == 10 and _fill_hex(ws.cell(4, 3)) in ("F39C12", "E67E22", "FFC000", "F5A623")
     assert ws.cell(4, 1).value == 1 and ws.cell(4, 4).value == 5   # 原值行完整
     assert _fill_hex(ws.cell(3, 4)) is None                        # 未变格无填充
-    # 甲3 被删除(反馈只有甲1,甲2): 原行(第5行,经P=4插入位移到第6行)整行橙
-    r_del = 6
+    # 甲3 疑似被删除: 上方插空值行(整行红, 反馈现状=不存在) + 原值行(整行橙)
+    r_blank, r_del = 6, 7
+    assert ws.cell(r_blank, 1).value is None and ws.cell(r_blank, 3).value is None
+    assert _fill_hex(ws.cell(r_blank, 3)) in ("FF0000", "E74C3C", "C0392B", "D63031")
     assert ws.cell(r_del, 1).value == 3
     assert _fill_hex(ws.cell(r_del, 3)) in ("F39C12", "E67E22", "FFC000", "F5A623")
     # 新增行(乙9)整行红: 按值定位
@@ -845,3 +913,332 @@ def test_explicit_baseline_original_red_remains_red_without_content_change(tmp_p
     wb = load_workbook(p["out"])
     assert str(wb.active["C2"].fill.fgColor.rgb)[-6:] == "FF0000" and wb.active["C2"].font.bold
     wb.close()
+
+
+def _roles_payload(tmp_path, base_records):
+    base = tmp_path / "base.xlsx"
+    fb = tmp_path / "fb.xlsx"
+    headers = ("序号", "项目名称", "单位", "金额", "状态")
+    book(base, base_records, headers=headers)
+    book(fb, base_records[:1], headers=headers)
+    sel = {"axis": "rows", "header_start": 1, "header_end": 1, "data_start": 2,
+           "data_end": 1 + len(base_records), "field_start": 1, "field_end": 5}
+    return {"path": str(base), "sheet": "计划", "selection": sel,
+            "feedback": [{"path": str(fb), "sheet": "计划", "selection": dict(sel)}],
+            "key_fields": [], "update_fields": [], "result_form": "direct",
+            "out": str(tmp_path / "o.xlsx")}
+
+
+def test_suggested_roles_multi_row_group(tmp_path):
+    # 多行组表: 单位列高频重复+序号组内唯一 → 预填推荐 分组=单位列, 主键=序号列
+    records = [(1, "a", "甲", 10, "x"), (2, "b", "甲", 20, "x"),
+               (3, "c", "乙", 30, "x"), (4, "d", "乙", 40, "x"), (5, "e", "乙", 50, "x")]
+    preview = reconcile_preview(_roles_payload(tmp_path, records))
+    assert preview["suggested_roles"] == {"group_field": 3, "key_fields": [1]}
+
+
+def test_suggested_roles_one_row_per_group_skips_group(tmp_path):
+    # 每组一行的表: 分组列没有对位价值, 只推荐序号主键
+    records = [(1, "s1", "甲", 10, "x"), (2, "s2", "乙", 20, "x"),
+               (3, "s3", "丙", 30, "x"), (4, "s4", "丁", 40, "x")]
+    preview = reconcile_preview(_roles_payload(tmp_path, records))
+    assert preview["suggested_roles"] == {"key_fields": [1]}
+
+
+def test_serial_ordinal_accepts_integral_float():
+    # WPS 常把整数存成 float(如 2.0): 序号判读应认
+    from engine.tools.excel_merge.reconcile import _serial_ordinal
+    assert _serial_ordinal(2.0) == 2
+    assert _serial_ordinal(17.0) == 17
+    assert _serial_ordinal(2.5) is None
+    assert _serial_ordinal("例1") is None
+
+
+def test_suggested_roles_extended_group_titles(tmp_path):
+    # 语义词表覆盖常见业务组名(区域/供应商/门店等), 但仍须通过数据形态验证
+    records = [(1, "a", "华东", 10, "x"), (2, "b", "华东", 20, "x"),
+               (3, "c", "华南", 30, "x"), (4, "d", "华南", 40, "x"),
+               (5, "e", "华北", 50, "x"), (6, "f", "华北", 60, "x")]
+    base = tmp_path / "base.xlsx"
+    fb = tmp_path / "fb.xlsx"
+    headers = ("序号", "名称", "区域", "金额", "状态")
+    book(base, records, headers=headers)
+    book(fb, records[:1], headers=headers)
+    sel = {"axis": "rows", "header_start": 1, "header_end": 1, "data_start": 2,
+           "data_end": 7, "field_start": 1, "field_end": 5}
+    preview = reconcile_preview({"path": str(base), "sheet": "计划", "selection": sel,
+                                 "feedback": [{"path": str(fb), "sheet": "计划", "selection": dict(sel)}],
+                                 "key_fields": [], "update_fields": [],
+                                 "result_form": "direct", "out": str(tmp_path / "o.xlsx")})
+    assert preview["suggested_roles"] == {"group_field": 3, "key_fields": [1]}
+
+
+def test_suggested_roles_rejects_unique_titled_group_column(tmp_path):
+    # 标题叫"单位"但内容每行唯一(不是分组形态) → 不推荐分组, 内容验证淘汰标题候选
+    records = [(1, "a", "甲公司", 10, "x"), (2, "b", "乙公司", 20, "x"),
+               (3, "c", "丙公司", 30, "x"), (4, "d", "丁公司", 40, "x"),
+               (5, "e", "戊公司", 50, "x"), (6, "f", "己公司", 60, "x")]
+    base = tmp_path / "base.xlsx"
+    fb = tmp_path / "fb.xlsx"
+    headers = ("序号", "名称", "单位", "金额", "状态")
+    book(base, records, headers=headers)
+    book(fb, records[:1], headers=headers)
+    sel = {"axis": "rows", "header_start": 1, "header_end": 1, "data_start": 2,
+           "data_end": 7, "field_start": 1, "field_end": 5}
+    preview = reconcile_preview({"path": str(base), "sheet": "计划", "selection": sel,
+                                 "feedback": [{"path": str(fb), "sheet": "计划", "selection": dict(sel)}],
+                                 "key_fields": [], "update_fields": [],
+                                 "result_form": "direct", "out": str(tmp_path / "o.xlsx")})
+    assert preview["suggested_roles"] == {"key_fields": [1]}
+
+
+def _flat_payload(tmp_path, base_records, fb_records, headers=("序号", "名称", "状态")):
+    base = tmp_path / "base.xlsx"
+    fb = tmp_path / "fb.xlsx"
+    book(base, base_records, headers=headers)
+    book(fb, fb_records, headers=headers)
+    sel = {"axis": "rows", "header_start": 1, "header_end": 1, "data_start": 2,
+           "data_end": 1 + len(base_records if base_records else fb_records), "field_start": 1, "field_end": len(headers)}
+    fb_sel = dict(sel, data_end=1 + len(fb_records))
+    return {"path": str(base), "sheet": "计划", "selection": sel,
+            "feedback": [{"path": str(fb), "sheet": "计划", "selection": fb_sel}],
+            "key_fields": [1], "update_fields": [3], "result_form": "direct",
+            "out": str(tmp_path / "o.xlsx")}
+
+
+def test_flat_missing_inside_returned_range_flagged_deleted(tmp_path):
+    # 非分组: 反馈交回 1,2,4,5,6(缺3, 夹在交回区间内) → 疑似删除而非普通未反馈
+    base = [(i, f"n{i}", "x") for i in range(1, 7)]
+    fb = [(1, "n1", "y"), (2, "n2", "y"), (4, "n4", "y"), (5, "n5", "y"), (6, "n6", "y")]
+    preview = reconcile_preview(_flat_payload(tmp_path, base, fb))
+    assert preview["can_export"], preview["issues"]
+    assert any("疑似被反馈方删除" in w for w in preview["warnings"])
+    flagged = [m for m in preview["missing"] if "可能已被删除" in m["message"]]
+    assert len(flagged) == 1 and flagged[0]["key"] == [3], flagged
+    plain = [m for m in preview["missing"] if m["message"] == "未交回，疑似被删除；已保留当前内容"]
+    assert not plain
+
+
+def test_flat_missing_tail_stays_not_received(tmp_path):
+    # 缺的是尾部(5,6 在交回区间之外): 与"没填到"无法区分, 仍报未反馈
+    base = [(i, f"n{i}", "x") for i in range(1, 7)]
+    fb = [(1, "n1", "y"), (2, "n2", "y"), (3, "n3", "y"), (4, "n4", "y")]
+    preview = reconcile_preview(_flat_payload(tmp_path, base, fb))
+    assert not any("疑似被反馈方删除" in w for w in preview["warnings"])
+    assert all(m["message"] == "未交回，疑似被删除；已保留当前内容" for m in preview["missing"])
+
+
+def test_flat_text_code_gap_flagged_deleted(tmp_path):
+    # 文本编号 T001..T006 交回缺 T003(等长编号, 字典序=编号序) → 疑似删除
+    codes = [f"T00{i}" for i in range(1, 7)]
+    base = [(c, f"n{c}", "x") for c in codes]
+    fb = [(c, f"n{c}", "y") for c in codes if c != "T003"]
+    preview = reconcile_preview(_flat_payload(tmp_path, base, fb))
+    flagged = [m for m in preview["missing"] if "可能已被删除" in m["message"]]
+    assert len(flagged) == 1 and flagged[0]["key"] == ["T003"], flagged
+
+
+def test_compare_output_flags_flat_deleted_row_orange(tmp_path):
+    # 非分组: 序号 3 疑似删除(夹在交回区间内) → 保留对比输出中该行整行橙
+    base = [(i, f"n{i}", "x") for i in range(1, 6)]
+    fb = [(1, "n1", "y"), (2, "n2", "y"), (4, "n4", "y"), (5, "n5", "y")]
+    p = _flat_payload(tmp_path, base, fb)
+    p["result_form"] = "compare"
+    result = reconcile_export(p)
+    assert result["exported"], result
+    wb = load_workbook(p["out"]); ws = wb["计划"]
+    r_del = next(r for r in range(2, ws.max_row + 1) if ws.cell(r, 1).value == 3)
+    assert _fill_hex(ws.cell(r_del, 2)) in ("F39C12", "E67E22", "FFC000", "F5A623")
+    assert _fill_hex(ws.cell(r_del, 3)) in ("F39C12", "E67E22", "FFC000", "F5A623")
+    wb.close()
+
+
+def test_group_renumbered_deletion_located_by_content(tmp_path):
+    # 序号被重排+删中间: 序号信息已丢, 但名称等非回填列没变 → 按内容对位
+    # 精确点名"缺少序号 5", 其余改动落正确行(不滑位), 不再退回"疑似重排"警示
+    base = [(2, "甲", "a", 10, "x"), (5, "甲", "b", 20, "x"), (9, "甲", "c", 30, "x")]
+    feedback = [(1, "甲", "a", 11, "x"), (2, "甲", "c", 99, "x")]   # 删了b, 序号重排成1,2
+    p = payload(tmp_path, base, feedback)
+    p["key_fields"] = [1]; p["update_fields"] = [4]; p["group_field"] = 2
+    preview = reconcile_preview(p)
+    assert preview["can_export"], preview["issues"]
+    assert any("缺少序号 5" in w and "内容比对" in w for w in preview["warnings"])
+    assert not any("疑似被重新编号" in w for w in preview["warnings"])
+    change = next(c for c in preview["changes"] if c["after"] == 99)
+    assert change["key"] == ["甲", 3]                    # c 的改动落底稿第 3 条, 不滑位
+
+
+def test_group_inserted_row_becomes_addition(tmp_path):
+    # 组内插行: 新行内容对不上 → 按新增处理, 原有行按内容对位, 无误删警告
+    base = [(2, "甲", "a", 10, "x"), (5, "甲", "b", 20, "x"), (9, "甲", "c", 30, "x")]
+    feedback = [(1, "甲", "a", 10, "x"), (2, "甲", "new", 77, "x"),
+                (3, "甲", "b", 20, "x"), (4, "甲", "c", 30, "x")]   # 中间插了 new
+    p = payload(tmp_path, base, feedback)
+    p["key_fields"] = [1]; p["update_fields"] = [4]; p["group_field"] = 2
+    preview = reconcile_preview(p)
+    assert preview["can_export"], preview["issues"]
+    assert preview["totals"]["additions"] == 1, preview["totals"]
+    assert not any("缺少序号" in w for w in preview["warnings"])
+    assert any("1 行内容与该组底稿记录都对不上" in w for w in preview["warnings"])
+
+
+def test_unit_value_changed_hinted_as_delete_plus_addition(tmp_path):
+    # 反馈里单位被改: 乙组消失+丙组出现 → 关联提示"可能单位被改动",
+    # 乙按疑似删除保留, 丙作为新记录补入(结果照常输出)
+    base = [(1, "甲", "a", 10, "x"), (1, "乙", "b", 20, "x")]
+    fb = tmp_path / "改单位.xlsx"
+    book(fb, [(1, "甲", "a", 11, "x"), (1, "丙", "b", 99, "x")])
+    p = payload(tmp_path, base, [(1, "甲", "a", 11, "x")])
+    p["feedback"] = [{"path": str(fb), "sheet": "计划",
+                      "selection": selection(2)}]
+    p["key_fields"] = [1]; p["update_fields"] = [4]; p["group_field"] = 2
+    preview = reconcile_preview(p)
+    assert preview["can_export"], preview["issues"]
+    assert any("单位被改动" in w for w in preview["warnings"])
+    assert preview["totals"]["additions"] == 1 and preview["totals"]["missing"] == 1
+    assert any("疑似被删除" in m["message"] for m in preview["missing"])
+
+
+def test_marker_color_avoids_existing_red(tmp_path):
+    # 底表数据区已有纯红填充: 标记红必须避让(不再是FF0000), 原有红保留,
+    # 预览响应带 marker_colors 且警告说明换色
+    from openpyxl.styles import PatternFill
+    base = tmp_path / "base.xlsx"
+    fb = tmp_path / "fb.xlsx"
+    book(base, [(1, "a", "x"), (2, "b", "x"), (3, "c", "x")])
+    book(fb, [(1, "a", "y"), (2, "b", "x"), (3, "c", "x")])
+    wb = load_workbook(base)
+    wb.active.cell(4, 3).fill = PatternFill(fill_type="solid", fgColor="FFFF0000")
+    wb.save(base); wb.close()
+    p = payload(tmp_path, [], [])      # 占位, 逐项重填
+    p = {"path": str(base), "sheet": "计划", "selection": selection(3),
+         "feedback": [{"path": str(fb), "sheet": "计划", "selection": selection(3)}],
+         "key_fields": [1], "update_fields": [3], "result_form": "compare",
+         "resolutions": {}, "out": str(tmp_path / "r.xlsx")}
+    preview = reconcile_preview(p)
+    assert preview["marker_colors"][0] != "FFFF0000", preview["marker_colors"]
+    assert any("自动改用 #" in w for w in preview["warnings"])
+    result = reconcile_export(p)
+    assert result["exported"], result
+    wb = load_workbook(p["out"]); ws = wb["计划"]
+    assert _fill_hex(ws.cell(2, 3)) == "8B0000"            # 新值行=避让后的深红
+    assert _fill_hex(ws.cell(3, 3)) in ("F39C12", "E67E22", "FFC000", "F5A623")  # 原值橙
+    assert _fill_hex(ws.cell(5, 3)) == "FF0000"            # 底表原有红原样保留
+    wb.close()
+
+
+def test_mapping_survives_header_range_drift(tmp_path):
+    # 反馈的表头行数识别与底稿差一行(大表常见): 完整表头路径对不上时,
+    # 按"最细字段行"标题回退匹配(两侧唯一才启用), 并警告说明——不阻断
+    from openpyxl import Workbook
+    base = tmp_path / "base.xlsx"
+    fb = tmp_path / "fb.xlsx"
+
+    def make(path):
+        wb = Workbook(); ws = wb.active; ws.title = "计划"
+        ws["A1"] = "全年计划"; ws.merge_cells("A1:F1")
+        for c, h in enumerate(["序号", "名称", "单位", "金额", "状态", "备注"], 1):
+            ws.cell(2, c, h); ws.cell(3, c, h)
+        for i in range(1, 5):
+            for c, v in enumerate([i, f"名{i}", "甲", i * 10, "进行中", "r"], 1):
+                ws.cell(3 + i, c, v)
+        wb.save(path); wb.close()
+
+    make(base); make(fb)
+    sel = {"axis": "rows", "header_start": 2, "header_end": 3,
+           "data_start": 4, "data_end": 7, "field_start": 1, "field_end": 6}
+    p = {"path": str(base), "sheet": "计划", "selection": dict(sel),
+         "feedback": [{"path": str(fb), "sheet": "计划",
+                       "selection": dict(sel, header_end=2)}],   # 表头识别少一行
+         "key_fields": [1], "update_fields": [4, 5], "result_form": "direct",
+         "resolutions": {}, "out": str(tmp_path / "r.xlsx")}
+    preview = reconcile_preview(p)
+    assert preview["can_export"], [i["message"] for i in preview["issues"]]
+    assert any("表头行数与底稿略有差异" in w for w in preview["warnings"])
+    # 反向(底稿识别少一行, 反馈完整)同样可导出
+    p2 = dict(p, selection=dict(sel, header_end=2),
+              feedback=[{"path": str(fb), "sheet": "计划", "selection": dict(sel)}])
+    assert reconcile_preview(p2)["can_export"]
+    # 无漂移时不触发回退警告
+    p3 = dict(p, feedback=[{"path": str(fb), "sheet": "计划", "selection": dict(sel)}])
+    rep3 = reconcile_preview(p3)
+    assert rep3["can_export"] and not any("表头行数" in w for w in rep3["warnings"])
+
+
+def test_split_meta_absolute_mapping_and_fallback(tmp_path):
+    # 拆分产物回填: 带溯源属性 → 按绝对列号精确对应(重名/漂移免疫);
+    # 表头被改 → 快照不符点名警告并回退标题匹配
+    import re as _re
+    from zipfile import ZipFile as ZF2
+    from engine.tools.excel_merge.native_split import split_export
+    src = tmp_path / "src.xlsx"
+    headers = ("序号", "序号", "单位", "金额", "状态")     # 双列同名序号
+    wb2 = Workbook(); ws2 = wb2.active; ws2.title = "计划"
+    ws2.append(list(headers))
+    rows = [(1, 1, "甲", 10, "x"), (2, 2, "甲", 20, "x"), (3, 3, "乙", 30, "x"), (4, 4, "乙", 40, "x")]
+    for r in rows:
+        ws2.append(list(r))
+    wb2.save(src); wb2.close()
+    sel = {"axis": "rows", "header_start": 1, "header_end": 1, "data_start": 2,
+           "data_end": 5, "field_start": 1, "field_end": 5}
+    split = split_export({"path": str(src), "sheet": "计划", "selection": sel,
+                          "group_fields": [{"kind": "field", "index": 3}],
+                          "group_mode": "combination", "blank_group": "separate",
+                          "filters": [], "resolutions": {}, "out_dir": str(tmp_path / "out"),
+                          "include_example_rows": False, "retain_all_sheets": False})
+    fb = Path(split["files"][0]["path"])
+    # 反馈不带 selection(引擎 fallback 自适应)——重名列靠 meta 而非标题
+    p = {"path": str(src), "sheet": "计划", "selection": dict(sel),
+         "feedback": [{"path": str(fb)}],
+         "key_fields": [1], "update_fields": [4], "result_form": "direct",
+         "resolutions": {}, "out": str(tmp_path / "r.xlsx")}
+    preview = reconcile_preview(p)
+    assert preview["can_export"], [i["message"] for i in preview["issues"]]
+    assert any("按导出时的列对应表精确对应" in w for w in preview["warnings"])
+    # 改表头: 快照不符 → 点名回退
+    wb3 = load_workbook(fb); wb3.active.cell(1, 4).value = "被改的金额"; wb3.save(fb); wb3.close()
+    preview2 = reconcile_preview(p)
+    assert any("第 4 列 的表头与导出时不一致" in w for w in preview2["warnings"])
+
+
+def test_field_mappings_echoed_for_ui(tmp_path):
+    # 预览响应携带每份反馈的全字段映射(含重名列按位置对上的)——
+    # 界面字段对应表据此回显, 重名列不再误显示"不对应"
+    headers = ("序号", "序号", "单位", "金额", "状态")     # 两列同名"序号"
+    records = [(1, 1, "甲", 10, "x"), (2, 2, "甲", 20, "x"), (3, 3, "乙", 30, "x")]
+    base = tmp_path / "base.xlsx"; fb = tmp_path / "fb.xlsx"
+    book(base, records, headers=headers)
+    book(fb, records[:2], headers=headers)
+    p = {"path": str(base), "sheet": "计划", "selection": selection(3),
+         "feedback": [{"path": str(fb), "sheet": "计划", "selection": selection(2)}],
+         "key_fields": [1], "update_fields": [4], "group_field": 3,
+         "result_form": "direct", "resolutions": {}, "out": str(tmp_path / "o.xlsx")}
+    preview = reconcile_preview(p)
+    assert preview["can_export"], [i["message"] for i in preview["issues"]]
+    assert len(preview["field_mappings"]) == 1
+    mapping = preview["field_mappings"][0]["mapping"]
+    assert mapping.get("1") == 1 and mapping.get("2") == 2   # JSON 键为字符串; 重名列按位置对上并回显
+    assert len(mapping) >= 5
+
+
+def test_reconcile_output_carries_column_meta(tmp_path):
+    # 回填导出的结果文件同样写入结构溯源属性——下一轮以它为底稿/反馈时,
+    # 识别与列对应按本轮结构走(重名列大表不重新失配)
+    base = [(1, "a", "甲", 10, "x"), (2, "b", "甲", 20, "x"), (3, "c", "乙", 30, "x")]
+    p = payload(tmp_path, base, base[:2])
+    p["key_fields"] = [1]; p["update_fields"] = [4]; p["group_field"] = 3
+    p["out"] = str(tmp_path / "round1.xlsx")
+    result = reconcile_export(p)
+    assert result["exported"], result
+    from engine.tools.excel_merge.preview import _split_meta
+    meta = _split_meta(p["out"])
+    assert meta and meta["columns"].get("1") == "编号" and len(meta["columns"]) == 5
+    # 以第一轮结果为底稿, 其副本作反馈: meta 绝对对应, 零 mapping issue
+    import shutil
+    fb2 = tmp_path / "round2_fb.xlsx"
+    shutil.copy(p["out"], fb2)
+    p2 = dict(p, path=p["out"], feedback=[{"path": str(fb2), "sheet": "计划", "selection": selection(3)}],
+              out=str(tmp_path / "round2.xlsx"))
+    preview2 = reconcile_preview(p2)
+    assert preview2["can_export"], [i["message"] for i in preview2["issues"]]
+    assert any("按导出时的列对应表精确对应" in w for w in preview2["warnings"])

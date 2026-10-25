@@ -11,6 +11,7 @@ import datetime as dt
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import tempfile
 import warnings
@@ -29,6 +30,7 @@ from openpyxl.styles import PatternFill
 
 from .merge import Cancelled
 from .compatibility import inspect_extensions
+from .preview import _split_meta
 
 
 def _json(value):
@@ -251,6 +253,9 @@ class Plan:
         self.feedback_count = self.duplicate_imports = 0
         self.record_count = 0
         self.additions_skipped = 0
+        self.suggested_roles = {}
+        self.marker_colors = None
+        self.field_mappings = []
 
     def issue(self, kind, identity, message, choices=(), **extra):
         iid = kind + ":" + _digest(identity)
@@ -276,6 +281,9 @@ class Plan:
             "changes": self.changes, "issues": self.issues, "missing": self.missing,
             "warnings": self.warnings,
             "can_export": not unresolved, "fields": fields,
+            "suggested_roles": self.suggested_roles or {},
+            "marker_colors": list(self.marker_colors or ("FFFF0000", "FFF39C12")),
+            "field_mappings": self.field_mappings,
             "totals": {"records": self.record_count, "feedback_records": self.feedback_count,
                        "changes": len(self.changes), "missing": len(self.missing),
                        "additions": len(self.additions), "additions_skipped": self.additions_skipped,
@@ -297,17 +305,57 @@ def _fields(plan, name, required=False):
     return values
 
 
-def _mapping(plan, source, required):
+def _mapping_diagnosis(target, source, field, last_matches):
+    """字段对不上时点出具体差异, 让用户一眼知道是缺列、改了名还是错位。"""
+    if not last_matches:
+        return (f"反馈文件共 {len(source.headers)} 列，其中没有这个标题的列——"
+                "请打开反馈文件核对：这一列可能被删除或改了标题；"
+                "确实没有就去掉该回填列，或让填报人补回。")
+    where = "、".join(f"第 {f} 列" for f in sorted(last_matches)[:6])
+    if len(last_matches) > 1:
+        return (f"底稿有多列同名，反馈的同名列在 {where}，与底稿第 {field} 列位置不一致"
+                "（反馈文件可能被插入或删除过列）——请在字段对应表里指定哪列对哪列。")
+    return (f"反馈的同名列在 {where}，与底稿第 {field} 列位置不一致"
+            "（反馈文件可能被插入或删除过列）——请在字段对应表里指定对应列。")
+
+
+def _meta_header_text(source, header_start, header_end, field):
+    """按拆分时的表头区间直接读反馈文件的该列表头(合并格取锚点)。
+    用 meta 自己的区间而非反馈识别的区间——识别漂移不影响快照核对。"""
+    parts = []
+    for h in range(header_start, header_end + 1):
+        cell = source.selection.cell(source.ws, h, field)
+        if isinstance(cell, MergedCell):
+            for rng in source.ws.merged_cells.ranges:
+                if cell.coordinate in rng:
+                    cell = source.ws.cell(rng.min_row, rng.min_col)
+                    break
+        if not _blank(cell.value):
+            parts.append(str(cell.value).strip())
+    return "/".join(parts)
+
+
+def _mapping(plan, source, required, strict=True):
     target = plan.current
     result = {}
     by_position = []
+    relaxed = []
     target_counts = defaultdict(int)
-    source_by_title = defaultdict(list)
+    target_last_counts = defaultdict(int)
     for title in target.headers.values():
         target_counts[title] += 1
+        if title:
+            target_last_counts[title[-1]] += 1
+    source_by_title = defaultdict(list)
+    source_by_last = defaultdict(list)
     for field, title in source.headers.items():
         source_by_title[title].append(field)
+        if title:
+            source_by_last[title[-1]].append(field)
+    meta = _split_meta(source.path)
+    meta_hits, meta_misses = [], []
     for field in required:
+        last_matches = []
         specified = str(field) in source.field_map or field in source.field_map
         explicit = source.field_map.get(str(field), source.field_map.get(field))
         if specified:
@@ -319,6 +367,21 @@ def _mapping(plan, source, required):
                 result[field] = mapped
                 continue
         else:
+            # 拆分溯源: 本工具拆出的文件带拆分时的列对应快照——用拆分时的表头
+            # 区间核对当前表头, 一致即按绝对列号对应(重名列/表头行数识别漂移
+            # 全免疫); 任一列不符说明反馈被动过列, 该列回退标题匹配并点名警告
+            if meta:
+                snapshot = meta["columns"].get(str(field))
+                sel = meta.get("selection") or {}
+                hs, he = sel.get("header_start"), sel.get("header_end")
+                if (snapshot is not None and isinstance(hs, int) and isinstance(he, int)
+                        and field in source.selection.fields):
+                    current = _meta_header_text(source, hs, he, field)
+                    if snapshot == current:
+                        result[field] = field
+                        meta_hits.append(field)
+                        continue
+                    meta_misses.append(field)
             title = target.headers[field]
             matches = source_by_title[title]
             if title and target_counts[title] == 1 and len(matches) == 1:
@@ -330,11 +393,34 @@ def _mapping(plan, source, required):
                 result[field] = field
                 by_position.append(field)
                 continue
-        plan.issue("field_mapping", [source.token, field],
-                   f"{source.label} 无法唯一对应字段 {field}（{' / '.join(target.headers[field])}）；"
-                   "请在界面的字段对应表中为它选择来源列",
-                   source=source.descriptor(), target_field=field,
-                   available_fields=[{"index": f, "path": list(t)} for f, t in source.headers.items()])
+            # 完整表头路径对不上(反馈的表头行数识别常与底稿差一行)时, 退而按
+            # "最细字段行"(路径末元素)匹配: 两侧该标题都唯一才启用, 重名列不猜
+            last = title[-1] if title else None
+            last_matches = source_by_last.get(last, [])
+            if last and target_last_counts[last] == 1 and len(last_matches) == 1:
+                result[field] = last_matches[0]
+                relaxed.append(field)
+                continue
+        if strict:      # 回填必需字段对不上才阻断; 全字段尽力映射只作界面回显
+            plan.issue("field_mapping", [source.token, field],
+                       f"{source.label} 无法唯一对应字段 {field}（{' / '.join(target.headers[field])}）。"
+                       + _mapping_diagnosis(target, source, field, last_matches),
+                       source=source.descriptor(), target_field=field,
+                       available_fields=[{"index": f, "path": list(t)} for f, t in source.headers.items()])
+    if relaxed:
+        plan.warnings.append(
+            f"{source.label} 的表头行数与底稿略有差异，已按字段行标题对应 "
+            f"{len(relaxed)} 个字段（如 {' / '.join(target.headers[relaxed[0]])}）。")
+    if strict:      # 只在必需字段映射时提示一次, 全字段回显映射不重复发
+        if meta_hits and not meta_misses:
+            plan.warnings.append(
+                f"{source.label} 带有本工具的结构信息，已按导出时的列对应表精确对应 "
+                f"{len(meta_hits)} 个字段。")
+        elif meta_misses:
+            where = "、".join(f"第 {f} 列" for f in meta_misses[:6])
+            plan.warnings.append(
+                f"{source.label} 带有本工具的结构信息，但 {where} 的表头与导出时不一致"
+                "（反馈文件可能被改动过列），这些列已改按标题匹配。")
     if by_position:
         plan.warnings.append(
             f"{source.label} 有 {len(by_position)} 个同名字段（如 {' / '.join(target.headers[by_position[0]])}）"
@@ -571,20 +657,104 @@ def _key_column_merged(source, key_field):
 
 
 def _serial_ordinal(value):
-    """拆分产物的组内序号是 1..N 的数字; 文本例N等返回 None。"""
+    """拆分产物的组内序号是 1..N 的数字(整数或整数值浮点, WPS 常存 float); 文本例N等返回 None。"""
     if isinstance(value, bool) or value is None:
         return None
     if isinstance(value, int):
         return value
+    if isinstance(value, float) and value == int(value):
+        return int(value)
     text = str(value).strip()
     return int(text) if text.isdigit() else None
 
 
-def _align_group_serials(found, base_group_ords, key_field, mapping):
-    """按主键对位: 反馈某组的序号值若互不相同且都落在底稿组内序号范围内
-    (单位删行而未重排), 用"序号值=组内第k条"重对位——精确定位被删记录,
-    并避免其后的记录整体滑位。序号不可解读的组保持原按位对位。
-    返回 (调整后的found, 已按主键对位的组集合)。"""
+def _suggest_roles(current):
+    """按表头语义和数据形态推荐回填预配置: 分组列 + 主键列。
+    分组列=单位/部门类标题且非空取值少量高频重复(合并块的下行继承锚点值);
+    主键=序号/编号类标题且(分组内)每行唯一非空, 无则退第一个(分组内)唯一列。
+    仅是预填建议, UI 应用后用户随时可改。"""
+    s = current.selection
+    carried = _split_meta(current.path)
+    if isinstance(carried, dict) and isinstance(carried.get("roles"), dict):
+        roles = carried["roles"]
+        keys = [k for k in (roles.get("key_fields") or [])
+                if isinstance(k, int) and not isinstance(k, bool) and k in s.fields]
+        group = roles.get("group_field")
+        if keys and (group is None or (isinstance(group, int) and group in s.fields)):
+            result = {}
+            if group is not None:
+                result["group_field"] = group
+            result["key_fields"] = keys
+            result["source"] = "meta"          # 上一轮配置沿用, 非按表头猜测
+            return result
+
+    def _column(f):
+        vals, anchor = [], None
+        for position in range(s.data_start, s.data_end + 1):
+            cell = s.cell(current.ws, position, f)
+            v = cell.value
+            if isinstance(cell, MergedCell):
+                v = anchor          # 合并块内的行继承锚点值(组块语义)
+            elif not _blank(v):
+                anchor = v
+            vals.append(v)
+        return vals
+
+    def _titles(f):
+        return " ".join(str(t) for t in current.headers.get(f, ()) if t)
+
+    columns = {f: _column(f) for f in s.fields}
+    total = len(next(iter(columns.values()))) if columns else 0
+    if not total:
+        return {}
+
+    group = None
+    for f in s.fields:
+        if not any(k in _titles(f) for k in ("单位", "部门", "科室", "公司", "机构",
+                                             "组织", "团队", "小组", "区县", "地市",
+                                             "区域", "门店", "网点", "班组", "车间",
+                                             "供应商", "客户", "学校", "班级")):
+            continue
+        filled = [v for v in columns[f] if not _blank(v)]
+        distinct = {_key([v]) for v in filled}
+        # 覆盖过半 + 取值少量高频重复(每组多行)才值得分组; 每组一行的表不分也罢
+        if len(filled) >= max(2, total * 0.8) and 2 <= len(distinct) <= max(3, total // 2):
+            group = f
+            break
+
+    def _unique_within(f):
+        keys = columns[group] if group is not None else [None] * total
+        buckets = defaultdict(list)
+        for v, g in zip(columns[f], keys):
+            buckets[_key([g])].append(v)
+        return all(not any(_blank(v) for v in vals)
+                   and len({_key([v]) for v in vals}) == len(vals)
+                   for vals in buckets.values())
+
+    key = next((f for f in s.fields
+                if any(k in _titles(f) for k in ("序号", "编号", "流水"))
+                and f != group and _unique_within(f)), None)
+    if key is None and group is not None:
+        # 无序号列时退而取名称/编码类的组内唯一列; 金额/日期类即使组内唯一
+        # 也不作主键——它们的值本就预期被改
+        key = next((f for f in s.fields if f != group and _unique_within(f)
+                    and any(k in _titles(f) for k in ("编码", "代码", "名称", "工号", "身份"))), None)
+    suggested = {}
+    if group is not None:
+        suggested["group_field"] = group
+    if key is not None:
+        suggested["key_fields"] = [key]
+    return suggested
+
+
+def _align_group_serials(found, base_group_ords, base_group_serials, key_field, mapping):
+    """按主键对位, 双模式依次尝试:
+    1) 反馈序号值 = 底稿组内序号列的值(拆分保留原序号的产物)——值相同即同一条;
+    2) 反馈序号值 = 组内第 k 条(拆分时每组从 1 重排的产物)。
+    模式2 命中但交回序号恰好是 1..n 且少于底稿条数时, "中间删行后被反馈端重新编号"
+    与"删了末尾几条"同貌, 缺口定位不可信——该组不算已对位, 交回数量警示点名。
+    其余命中可精确定位被删记录(缺口即被删, 其后不滑位); 序号不可解读的组按位对位。
+    返回 (调整后的found, 已按主键对位的组集合, 疑似被反馈端重排的组集合)。"""
     groups = defaultdict(list)
     passthrough = []
     for ident, entry in found.items():
@@ -592,19 +762,34 @@ def _align_group_serials(found, base_group_ords, key_field, mapping):
             groups[ident[1]].append((ident, entry))
         else:
             passthrough.append((ident, entry))
-    adjusted, aligned = {}, set()
-    for gkey, members in groups.items():
-        base_ks = base_group_ords.get(gkey) or set()
+    adjusted, aligned, suspected = {}, set(), set()
+
+    def _try(mapping_rule):
         targets = {}
-        usable = bool(base_ks)
         for ident, entry in members:
             k = _serial_ordinal(entry[1].get(mapping.get(key_field, key_field)))
-            if k is None or k not in base_ks or k in targets:
-                usable = False
-                break
-            targets[k] = entry
-        if usable:
-            aligned.add(gkey)
+            if k is None:
+                return None
+            pos = mapping_rule(k)
+            if pos is None or pos in targets:
+                return None
+            targets[pos] = entry
+        return targets
+
+    for gkey, members in groups.items():
+        base_ks = base_group_ords.get(gkey) or set()
+        serial_map = base_group_serials.get(gkey) or {}
+        targets = _try(lambda k: serial_map.get(k)) if serial_map else None
+        mode2 = False
+        if targets is None:
+            targets = _try(lambda k: k if k in base_ks else None) if base_ks else None
+            mode2 = targets is not None
+        if targets:
+            ks = set(targets)
+            if mode2 and len(ks) < len(base_ks) and ks == set(range(1, len(ks) + 1)):
+                suspected.add(gkey)
+            else:
+                aligned.add(gkey)
             for k, entry in targets.items():
                 position, values, display = entry
                 adjusted[("grp", gkey, k)] = (position, values, [display[0], k])
@@ -613,7 +798,65 @@ def _align_group_serials(found, base_group_ords, key_field, mapping):
                 adjusted[ident] = entry
     for ident, entry in passthrough:
         adjusted[ident] = entry
-    return adjusted, aligned
+    return adjusted, aligned, suspected
+
+
+def _align_group_content(found, records, key_field, group_field, update_fields, mapping):
+    """序号对位不可信的组退而按内容对位: 填报人只应修改回填字段, 其余列的内容
+    就是记录身份。取双方都有且不在回填字段里的列做指纹, 底稿组内指纹互不相同
+    且反馈行至少一行命中时启用——命中的行按内容精确对位(被删记录可点名),
+    对不上的行按组内新行序处理(插行/新增)。返回 (调整后的found, 按内容对位
+    的组集合, {组: (新增行数, 组显示值)})。"""
+    groups = defaultdict(list)
+    passthrough = []
+    for ident, entry in found.items():
+        if isinstance(ident, tuple) and ident[0] == "grp":
+            groups[ident[1]].append((ident, entry))
+        else:
+            passthrough.append((ident, entry))
+    anchors = [f for f in mapping
+               if f != key_field and f != group_field and f not in update_fields]
+    adjusted, aligned, extras = {}, set(), {}
+    for gkey, members in groups.items():
+        label = members[0][1][2][0] if members else gkey
+        base_fp, group_ks = {}, []
+        usable = bool(anchors)
+        if usable:
+            for ident, (_, values, _) in records.items():
+                if isinstance(ident, tuple) and ident[0] == "grp" and ident[1] == gkey:
+                    group_ks.append(ident[2])
+                    fp = _key([values.get(f) for f in anchors])
+                    base_fp[fp] = None if fp in base_fp else ident[2]
+            usable = len(group_ks) >= 2 and not any(v is None for v in base_fp.values())
+        if not usable:                       # 无锚列/组内单条/指纹歧义: 保持原对位
+            for ident, entry in members:
+                adjusted[ident] = entry
+            continue
+        targets, new_rows = {}, []
+        for ident, entry in members:
+            position, values, display = entry
+            fp = _key([values.get(mapping[f]) for f in anchors])
+            hit = base_fp.get(fp)
+            if hit is None or hit in targets:
+                new_rows.append(entry)
+            else:
+                targets[hit] = (position, values, [display[0], hit])
+        if not targets:                      # 一条都对不上: 非回填列可能被大改, 退回
+            for ident, entry in members:
+                adjusted[ident] = entry
+            continue
+        aligned.add(gkey)
+        for k, entry in targets.items():
+            adjusted[("grp", gkey, k)] = entry
+        if new_rows:                         # 组内行序超出底稿范围 → 新记录
+            extras[gkey] = (len(new_rows), label)
+            next_k = max(group_ks) + 1
+            for position, values, display in new_rows:
+                adjusted[("grp", gkey, next_k)] = (position, values, [display[0], next_k])
+                next_k += 1
+    for ident, entry in passthrough:
+        adjusted[ident] = entry
+    return adjusted, aligned, extras
 
 
 def _analyse(payload, cancel=None, progress=None):
@@ -621,6 +864,28 @@ def _analyse(payload, cancel=None, progress=None):
     try:
         _cancelled(cancel)
         current = plan.current = Source(payload, None, plan.books, plan.warnings)
+        try:
+            # 预配置推荐: 只在未配置主键时计算(UI 首查采用后不再需要), 失败不影响主流程
+            if not payload.get("key_fields"):
+                plan.suggested_roles = _suggest_roles(current)
+        except Exception:
+            plan.suggested_roles = {}
+        base_meta = _split_meta(current.path)
+        if base_meta and base_meta.get("form") == "compare":
+            plan.warnings.append(
+                "当前底稿是「保留对比」的输出，内含原值对照行，数据结构会被打乱"
+                "（识别与对位不可靠）；请改用「直接替换」导出的终稿作底稿。")
+        try:
+            # 标记色提前到预览阶段确定, 预览/导出与提示使用同一套颜色
+            plan.marker_colors = _pick_marker_colors(current.ws, current.selection)
+        except Exception:
+            plan.marker_colors = ("FFFF0000", "FFF39C12")
+        if plan.marker_colors[0] != "FFFF0000":
+            plan.warnings.append(
+                f"底表已使用红色系颜色，改动标记自动改用 #{plan.marker_colors[0][-6:]} 以便区分。")
+        if plan.marker_colors[1] != "FFF39C12":
+            plan.warnings.append(
+                f"底表已使用橙色系颜色，原值对照自动改用 #{plan.marker_colors[1][-6:]} 以便区分。")
         if current.ws.protection.sheet:
             plan.issue("protected_sheet", current.token, "当前工作表受保护；请先在 Excel/WPS 中确认并解除保护")
         keys = _fields(plan, "key_fields", True)
@@ -646,8 +911,8 @@ def _analyse(payload, cancel=None, progress=None):
                 return plan
             group_mode = True
             plan.warnings.append(
-                "分组匹配：反馈中每组的第 k 条记录对应底稿同名组的第 k 条（序号数值不要求一致）；"
-                "若反馈在组内中间插行或删行，结果需人工核对。")
+                "分组匹配：按（单位，组内第几条）对位，序号数值不要求一致；"
+                "反馈删行、插行或序号被改过时，会自动按序号或内容比对精确定位并提示。")
         elif len(keys) == 1 and _key_column_merged(current, keys[0]):
             # 名称类主键常纵向合并: 合并块本身是一条记录, 块内行是子行。
             # 按块匹配是使用该列作主键的唯一合理读法, 自动启用并留痕。
@@ -683,11 +948,21 @@ def _analyse(payload, cancel=None, progress=None):
         seen_imports = set()
         # 删除检查(分组模式): 反馈某组只交回部分记录 → 缺失条疑似被删除
         base_group_ords = defaultdict(set)
+        base_group_serials = defaultdict(dict)   # 组 -> {序号列值: 组内行序}; 值重复记 None(歧义)
         if group_mode:
-            for ident in records:
+            for ident, (_, values, _) in records.items():
                 if isinstance(ident, tuple) and ident[0] == "grp":
                     base_group_ords[ident[1]].add(ident[2])
+                    sv = _serial_ordinal(values.get(keys[0]))
+                    if sv is not None:
+                        if sv in base_group_serials[ident[1]]:
+                            base_group_serials[ident[1]][sv] = None
+                        else:
+                            base_group_serials[ident[1]][sv] = ident[2]
         suspected_deleted = set()
+        file_key_sets = []
+        returned_values = []     # 非分组: 各反馈交回的主键原始值(只计底稿已有的)
+        processed_imports = 0
         for index, item in enumerate(items):
             _cancelled(cancel)
             feedback = Source(item, payload.get("selection"), plan.books, plan.warnings)
@@ -695,12 +970,30 @@ def _analyse(payload, cancel=None, progress=None):
                 plan.duplicate_imports += 1
                 continue
             seen_imports.add(feedback.token)
+            processed_imports += 1
             required = sorted(set(keys + updates + ([group_field] if group_mode else [])))
             mapping = _mapping(plan, feedback, required)
+            if len(mapping) != len(required):
+                # 缺字段对应的反馈不参与对位与删除检查——否则它交回的行会被
+                # 误报成"未交回疑似删除"
+                plan.warnings.append(
+                    f"{feedback.label} 缺少字段对应，本次未采用它的内容；请先在字段对应表中补齐。")
+                continue
             full_map = None
             if group_mode:
                 found = _group_records(plan, feedback, keys[0], group_field, mapping, "feedback")
-                found, serial_aligned = _align_group_serials(found, base_group_ords, keys[0], mapping)
+                found, serial_aligned, suspected_renumbered = _align_group_serials(
+                    found, base_group_ords, base_group_serials, keys[0], mapping)
+                content_aligned, content_extras = set(), {}
+                if any(isinstance(ident, tuple) and ident[0] == "grp"
+                       and ident[1] not in serial_aligned for ident in found):
+                    # 序号对位不可信的组: 填报人只应改回填列, 其余列内容即身份,
+                    # 按内容指纹精确对位(删行可点名, 插行按新增处理)
+                    if full_map is None:
+                        full_map = _mapping(plan, feedback, list(current.selection.fields))
+                    if len(full_map) == len(current.selection.fields):
+                        found, content_aligned, content_extras = _align_group_content(
+                            found, records, keys[0], group_field, set(updates), full_map)
                 base_groups = {k[1] for k in records if isinstance(k, tuple) and k[0] == "grp"}
                 labels = {}
                 for identity, (_, _, display) in found.items():
@@ -709,8 +1002,25 @@ def _analyse(payload, cancel=None, progress=None):
                 for _, label in sorted(labels.items(), key=lambda pair: str(pair[1])):
                     plan.warnings.append(
                         f"{feedback.label} 含底表中没有的分组：{label}，该组记录将作为新记录处理。")
+                if labels:
+                    fb_all_groups = {ident[1] for ident in found
+                                     if isinstance(ident, tuple) and ident[0] == "grp"}
+                    # 反馈多出新分组的同时有底稿分组整组消失 → 疑似单位值被改动:
+                    # 原记录按疑似删除保留, 新单位记录作为新记录补入
+                    if any(g not in fb_all_groups for g in base_groups):
+                        plan.warnings.append(
+                            f"{feedback.label} 既含底表中没有的分组，又有底稿分组未出现在反馈中"
+                            "——可能是有记录的单位被改动：原记录按疑似删除保留，"
+                            "新单位的记录将作为新记录补入。")
+                for gkey, (count, label) in sorted(content_extras.items(), key=lambda kv: str(kv[1][1])):
+                    plan.warnings.append(
+                        f"{feedback.label} 的组「{label}」有 {count} 行内容与该组底稿记录都对不上，"
+                        "已按新增记录处理（若填报人改动了回填列以外的内容，请核对该组）。")
             else:
                 found = _indexed(plan, feedback, keys, mapping, "feedback", known_keys=set(records))
+                file_key_sets.append((feedback.label, set(found)))
+                returned_values.extend(display[0] for identity, (_, _, display) in found.items()
+                                       if identity in records and display)
             if group_mode:
                 fb_groups = defaultdict(set)
                 for ident in found:
@@ -724,13 +1034,21 @@ def _analyse(payload, cancel=None, progress=None):
                     label = found[("grp", gkey, min(fb_ks))][2][0]
                     for k in missing_ks:
                         suspected_deleted.add(("grp", gkey, k))
-                    if gkey in serial_aligned:
-                        # 按主键对位成功: 序号缺口精确点名被删的记录, 其余对位不受影响
+                    if gkey in serial_aligned or gkey in content_aligned:
+                        # 按主键对位成功: 序号缺口或内容比对精确点名被删的记录, 其余对位不受影响
+                        via = "序号" if gkey in serial_aligned else "内容比对"
                         for k in sorted(missing_ks):
                             base_serial = records[("grp", gkey, k)][1].get(keys[0])
                             plan.warnings.append(
                                 f"{feedback.label} 的组「{label}」缺少序号 {base_serial}"
-                                f"（底稿组内第 {k} 条），可能已被删除；其余记录已按序号对位。")
+                                f"（底稿组内第 {k} 条），可能已被删除；其余记录已按{via}对位。")
+                    elif gkey in suspected_renumbered:
+                        # 反馈序号恰从 1 连续且少于底稿: 中间删行后被重新编号与删了末尾
+                        # 同貌, 缺口定位不可信——不冒充精确, 点名疑似重排请整组核对
+                        plan.warnings.append(
+                            f"{feedback.label} 的组「{label}」交回 {len(fb_ks)} 条，底稿有 {len(base_ks)} 条，"
+                            f"少 {len(missing_ks)} 条——反馈序号恰从 1 连续，疑似被重新编号过，"
+                            "无法定位删的是哪一条；该组按第 k 条对位，请逐条核对该组的改动。")
                     else:
                         # 组内按"第 k 条"对位: 中间删行会让后续记录整体滑位,
                         # 无法断定缺的是哪一条, 因此报数量差并提示核对整组
@@ -738,8 +1056,6 @@ def _analyse(payload, cancel=None, progress=None):
                             f"{feedback.label} 的组「{label}」交回 {len(fb_ks)} 条，底稿有 {len(base_ks)} 条，"
                             f"少 {len(missing_ks)} 条——可能有记录被删除；该组按第 k 条对位，"
                             "对应关系可能整体错位，请逐条核对该组的改动。")
-            if len(mapping) != len(required):
-                continue
             for key, (position, values, key_values) in found.items():
                 plan.feedback_count += 1
                 record_map = mapping
@@ -747,17 +1063,69 @@ def _analyse(payload, cancel=None, progress=None):
                     # Confirming a new task appends the whole task, including its
                     # identity/context fields, not just the selected update fields.
                     if full_map is None:
-                        full_map = _mapping(plan, feedback, list(current.selection.fields))
+                        full_map = _mapping(plan, feedback, list(current.selection.fields), strict=False)
                     record_map = full_map
                     if len(record_map) != len(current.selection.fields):
                         continue
                 proposals[key].append((feedback, position, values, key_values, record_map))
+            # 全字段尽力映射(非阻断): 字段对应表用它回显引擎的真实对应决策——
+            # 重名列按位置/拆分属性对上的, 界面不再误显示"不对应"
+            if full_map is None:
+                full_map = _mapping(plan, feedback, list(current.selection.fields), strict=False)
+            plan.field_mappings.append({"name": Path(feedback.path).name, "sheet": feedback.ws.title,
+                                        "mapping": dict(full_map)})
             if progress:
                 progress(index + 1, len(items), feedback.label, plan.feedback_count)
+        if not group_mode and len(file_key_sets) > 1:
+            # 多份反馈的主键值一模一样(如拆分产物序号被每组从 1 重排)时,
+            # 按值对位必然互相挤占——这是配置问题, 点名提示而不是留一堆冲突
+            for i in range(len(file_key_sets)):
+                for j in range(i + 1, len(file_key_sets)):
+                    la, ka = file_key_sets[i]
+                    lb, kb = file_key_sets[j]
+                    if len(ka) > 1 and ka == kb:
+                        plan.warnings.append(
+                            f"{la} 与 {lb} 交回记录的主键值完全相同——若它们是按单位拆分的表格"
+                            "且序号被每组从 1 重排，请改用“分组（单位）+ 序号”方式回填，"
+                            "或重新拆分并保留原序号。")
+        # 删除检查(非分组): 仅单份反馈时, 缺失值落在交回值的最小..最大区间内——
+        # 反馈交回了它前后的记录却唯独跳过它, 疑似被删除。多份反馈合并值域的
+        # "间隙"可能只是各自覆盖范围不同, 不构成删除证据; 区间外(尾部)同理不判
+        if (not group_mode and len(keys) == 1 and processed_imports == 1
+                and len(returned_values) >= 2):
+            vals = returned_values
+            numeric = [v for v in vals if isinstance(v, (int, float)) and not isinstance(v, bool)]
+            texts = [v for v in vals if isinstance(v, str)]
+            if len(numeric) == len(vals):
+                ordered, is_num = numeric, True
+            elif len(texts) == len(vals) and (len({len(v) for v in texts}) == 1
+                                              or all(v.strip().isdigit() for v in texts)):
+                # 等长编号(如 T007)或纯数字文本: 字典序即编号序; 普通名称列无序, 不判
+                ordered, is_num = texts, False
+            else:
+                ordered = None
+            if ordered:
+                lo, hi = min(ordered), max(ordered)
+                for key, (_, _, display) in records.items():
+                    if key in proposals or not display:
+                        continue
+                    v = display[0]
+                    same_kind = isinstance(v, (int, float)) and not isinstance(v, bool) \
+                        if is_num else isinstance(v, str)
+                    if same_kind and lo <= v <= hi:
+                        suspected_deleted.add(key)
+                count = sum(1 for k in suspected_deleted if k in records)
+                if count:
+                    plan.warnings.append(
+                        f"有 {count} 条记录夹在已交回记录中间却未交回——疑似被反馈方删除，"
+                        "已保留当前内容（明细见未反馈清单）。")
+        deleted_text = ("该组其余记录已交回而此条缺失，可能已被删除；已保留当前内容"
+                        if group_mode else "反馈交回了前后的记录而唯独缺这条，可能已被删除；已保留当前内容")
+        # 反馈按整份交回: 没交回的记录默认按疑似删除提示(保留当前内容), 不再报"未反馈"
         plan.missing = [{"key": values, "position": position, "status": "not_received",
                          "action": "keep_current",
-                         "message": ("该组其余记录已交回而此条缺失，可能已被删除；已保留当前内容"
-                                     if key in suspected_deleted else "本次未反馈，保留当前内容")}
+                         "message": (deleted_text if key in suspected_deleted
+                                     else "未交回，疑似被删除；已保留当前内容")}
                         for key, (position, _, values) in records.items() if key not in proposals]
         final = {key: (pos, dict(values), key_values, current.descriptor())
                  for key, (pos, values, key_values) in records.items()}
@@ -792,7 +1160,7 @@ def _analyse(payload, cancel=None, progress=None):
                         "id": "conflict:" + _digest(key), "key": chosen[2], "field": None,
                         "field_title": "多份反馈冲突（已保留当前内容）",
                         "before": current_values, "after": current_values, "kind": "conflict",
-                        "source": chosen[0].descriptor(), "position": records[key][0], "marked": False,
+                        "source": chosen[0].descriptor(), "position": records[key][0],
                         "candidates": [{"source": src.descriptor(), "values": vals}
                                        for src, vals, _ in unique.values()]})
                     plan.warnings.append(
@@ -846,7 +1214,7 @@ def _analyse(payload, cancel=None, progress=None):
             if key not in records:
                 plan.changes.append({"id": "new:" + _digest(key), "key": key_values, "field": None,
                                      "before": None, "after": values, "kind": "new",
-                                     "source": source, "position": position, "marked": bool(compares)})
+                                     "source": source, "position": position})
             for field in fields:
                 after = values.get(field)
                 before = None
@@ -857,8 +1225,7 @@ def _analyse(payload, cancel=None, progress=None):
                                          baseline.selection.cell(baseline.ws, br, base_map[field]),
                                          _coordinate(current.selection, position, field))
                 if _equivalent(before, after):
-                    if (payload.get("baseline") and baseline_record and field in compares
-                            and field in base_map and key in records):
+                    if (payload.get("baseline") and baseline_record and field in base_map and key in records):
                         # 红色填充是本次对照的呈现, 不是永久累积状态。值改回与基线一致时
                         # 恢复基线的填充色, 字体保持当前样子; 基线本来就是红的则保持红。
                         current_cell = current.selection.cell(current.ws, position, field)
@@ -869,7 +1236,6 @@ def _analyse(payload, cancel=None, progress=None):
                                                                     base_map[field])
                             plan.restore_colors.append((position, field, copy(baseline_cell.fill)))
                     continue
-                marked = field in compares
                 if isinstance(after, str) and after.strip() in ("取消", "已取消", "作废"):
                     kind = "cancel"
                 elif _blank(before) and not _blank(after):
@@ -881,7 +1247,7 @@ def _analyse(payload, cancel=None, progress=None):
                 plan.changes.append({"id": "change:" + _digest([key, field]), "key": key_values,
                                      "field": field, "field_title": " / ".join(current.headers[field]),
                                      "before": before, "after": after, "kind": kind,
-                                     "source": source, "position": position, "marked": marked,
+                                     "source": source, "position": position,
                                      "baseline_missing": baseline_record is None})
                 plan.red.append((position, field))   # 默认: 全部改动格红填充
         if payload.get("out"):
@@ -1067,14 +1433,22 @@ def _pick_marker_colors(ws, selection):
                     rgb = rgb_bytes(fill.fgColor)
                     if rgb:
                         existing.add(rgb)
-    new_candidates = ["FFFF0000", "FFE74C3C", "FFC0392B", "FFD63031"]
-    old_candidates = ["FFF39C12", "FFE67E22", "FFFFC000", "FFF5A623"]
+    new_candidates = ["FFFF0000", "FFE74C3C", "FFC0392B", "FFD63031", "FF8B0000", "FFFF69B4"]
+    old_candidates = ["FFF39C12", "FFE67E22", "FFFFC000", "FFF5A623", "FF8B4513", "FFFF7F50"]
+
     def pick(cands, avoid):
+        # 优先取与现有色(及另一标记色)距离足够的候选; 全都避不开时选
+        # 距离最大的——绝不退回首选与底表撞色
+        best, best_score = cands[0], -1.0
         for cand in cands:
             rgb = bytes.fromhex(cand[-6:])
-            if all(distance(rgb, x) >= 110 for x in avoid) and all(distance(rgb, x) >= 110 for x in existing):
+            score = min([distance(rgb, x) for x in list(avoid) + list(existing)] or [0.0])
+            if score >= 110:
                 return cand
-        return cands[0]
+            if score > best_score:
+                best, best_score = cand, score
+        return best
+
     color_new = pick(new_candidates, [])
     color_old = pick(old_candidates, [bytes.fromhex(color_new[-6:])])
     return color_new, color_old
@@ -1107,17 +1481,33 @@ def _insert_compare_rows(plan):
     for m in list(ws.merged_cells.ranges):
         ws.unmerge_cells(str(m))
 
-    # 3) 自下而上插入原值行/列并回填
-    insert_points = sorted(changed_fields, reverse=True)
-    for pos in insert_points:
-        P = pos + 1
+    # 3) 自下而上插入: 改动行下方插原值行(插入点 P=pos+1); 疑似删除行上方插
+    #    空值行(P=pos, 值全空整行红=反馈现状, 与"新值红/原值橙"语言对齐)。
+    #    同一插入点先插空值行, 原值行最终落在其上
+    def _deleted_marker(entry):
+        key = entry.get("key")
+        return ("被删除" in entry.get("message", "") and entry.get("position")
+                and not (isinstance(key, list) and key and str(key[0]).startswith("例")))
+    deleted_positions = sorted({e["position"] for e in plan.missing if _deleted_marker(e)})
+    insert_ops = sorted([(pos + 1, 1) for pos in changed_fields]
+                        + [(pos, 0) for pos in deleted_positions],
+                        key=lambda t: (-t[0], t[1]))
+    for P, op in insert_ops:
         if rows_axis:
             ws.insert_rows(P)
-            ws.row_dimensions[P].height = ws.row_dimensions[pos].height
+            ws.row_dimensions[P].height = ws.row_dimensions[P + 1 if op == 0 else P - 1].height
         else:
             ws.insert_cols(P)
-            src_dim, dst_dim = ws.column_dimensions[get_column_letter(pos)], ws.column_dimensions[get_column_letter(P)]
-            dst_dim.width = src_dim.width
+            src_dim = ws.column_dimensions[get_column_letter(P + 1 if op == 0 else P - 1)]
+            ws.column_dimensions[get_column_letter(P)].width = src_dim.width
+        if op == 0:
+            for f in fields:
+                cell = sel.cell(ws, P, f)
+                cell._style = copy(sel.cell(ws, P + 1, f)._style)
+                cell.value = None
+                cell.fill = PatternFill(fill_type="solid", fgColor=color_new)
+            continue
+        pos = P - 1
         for f in fields:
             cell = sel.cell(ws, P, f)
             value, style = snapshots[pos][f]
@@ -1128,7 +1518,7 @@ def _insert_compare_rows(plan):
 
     # 4) 合并区按累计位移重建: 新位置 = 原位置 + (插入点中 <= 原位置 的数量)
     def shifted(x):
-        return x + sum(1 for P in (pos + 1 for pos in insert_points) if P <= x)
+        return x + sum(1 for P, _ in insert_ops if P <= x)
 
     for (r1, c1, r2, c2) in original_merges:
         if rows_axis:
@@ -1136,9 +1526,9 @@ def _insert_compare_rows(plan):
         else:
             ws.merge_cells(start_row=r1, start_column=shifted(c1), end_row=r2, end_column=shifted(c2))
 
-    # 5) 删除行整行橙底 / 新增行整行红底(位置按同一位移规则换算)
+    # 5) 疑似删除行: 原值行整行橙(空值行已在插入时整行红); 新增行整行红
     for entry in plan.missing:
-        if "被删除" in entry.get("message", "") and entry.get("position"):
+        if _deleted_marker(entry):
             for f in fields:
                 sel.cell(ws, shifted(entry["position"]), f).fill = PatternFill(
                     fill_type="solid", fgColor=color_old)
@@ -1201,7 +1591,8 @@ def reconcile_export(payload, cancel=None, progress=None):
         if not out.parent.is_dir():
             raise ValueError("输出目录不存在")
         form = payload.get("result_form") or "compare"
-        plan.marker_colors = _pick_marker_colors(plan.current.ws, plan.current.selection)
+        if not plan.marker_colors:      # 异常兜底: 预览阶段未算成时导出前再算
+            plan.marker_colors = _pick_marker_colors(plan.current.ws, plan.current.selection)
         _append_template(plan.current, plan.additions)
         for position, field, value in plan.actions:
             _cancelled(cancel)
@@ -1219,6 +1610,20 @@ def reconcile_export(payload, cancel=None, progress=None):
             os.close(fd)
             temporary.append(Path(name))
         plan.current.book.save(temporary[0])
+        # 回填结果同样写入结构溯源属性: 下一轮以该文件为底稿或反馈时,
+        # 识别与列对应仍按本轮结构走(与拆分产物共用同一套属性和消费逻辑);
+        # 写入失败不阻断导出
+        from .native_split import _build_split_meta, _write_split_meta
+        try:
+            meta = _build_split_meta(plan.current.path, plan.current.ws.title,
+                                     vars(plan.current.selection))
+            meta["form"] = form            # 对比形态的结果含原值对照行, 不宜作下轮底稿
+            # 本轮的主键/分组配置随文件带走: 下轮以它为底稿时自动沿用, 不再猜
+            meta["roles"] = {"key_fields": list(payload.get("key_fields") or []),
+                             "group_field": payload.get("group_field")}
+            _write_split_meta(temporary[0], meta)
+        except Exception:
+            pass
         result.update({"out": str(out), "changes_path": str(log), "exported": True})
         temporary[1].write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
         _cancelled(cancel)
