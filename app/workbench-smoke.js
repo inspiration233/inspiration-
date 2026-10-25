@@ -129,7 +129,6 @@ for target,headers,row in [(sys.argv[10],['ID','Plan','Done'],['R001',10,6]),(sy
     await T.showSource(T.current().files[0]);
     T.current().role='keys'; T.selectField(1,'rows');
     T.current().role='updates'; for(const n of [2,3,4,5,7])T.selectField(n,'rows');
-    T.current().role='compares'; for(const n of [2,3,4,5])T.selectField(n,'rows');
     // The optional second output is configured through real controls.
     document.querySelector('#filtered-enabled').click();
     document.querySelector('#add-output-filter').click();
@@ -139,9 +138,9 @@ for target,headers,row in [(sys.argv[10],['ID','Plan','Done'],['R001',10,6]),(sy
     const filterValue=document.querySelector('#filtered-rows input');filterValue.value='2026-06';filterValue.dispatchEvent(new Event('input',{bubbles:true}));
     assert(await T.previewResult(),'回填预览失败：'+document.querySelector('#notice').textContent);
     let report=T.current().result;
-    assert(report.changes.some(c=>c.key[0]==='T002'&&c.after===25&&c.marked),'未识别计划调整');
-    assert(report.changes.some(c=>c.key[0]==='T005'&&c.marked===false),'正常状态反馈误标红');
-    assert(document.querySelectorAll('.changed-value').length>0,'差异没有红字预览');
+    assert(report.changes.some(c=>c.key[0]==='T002'&&c.after===25),'未识别计划调整');
+    assert(report.changes.some(c=>c.key[0]==='T005'&&c.after==='已完成'),'正常状态反馈未识别');
+    assert(document.querySelectorAll('.changes-table tr').length>1,'差异清单没有列出改动');
     // 新记录默认自动追加(2026-10-22 用户决策), 界面不再逐条要求确认
     assert(report.totals.additions>0,'新记录未自动追加：'+JSON.stringify(report.totals));
     assert(report.can_export&&!report.issues.some(i=>i.kind==='addition'),'自动追加后仍被阻断：'+JSON.stringify(report.issues));
@@ -156,6 +155,15 @@ for target,headers,row in [(sys.argv[10],['ID','Plan','Done'],['R001',10,6]),(sy
     const changes=T.current().result.changes.length;
     assert(await T.exportResult(P.out+'/全年更新.xlsx'),'回填导出失败：'+document.querySelector('#notice').textContent);
     assert(document.querySelector('#done-out').textContent.includes('筛选结果'),'完成界面未显示第二份输出');
+    // 自动预填: 清空主键/分组后直接预览, 引擎按表头(任务编号/责任单位)的推荐应被自动应用
+    T.current().keys=[]; T.current().groupField=null; T.current().autoRoles=null;
+    assert(await T.previewResult(),'自动预填场景预览失败：'+document.querySelector('#notice').textContent);
+    assert(T.current().keys.length===1&&T.current().keys[0]===1,'主键未被自动预填为任务编号列');
+    assert(T.current().groupField===3,'分组列未被自动预填为责任单位列');
+    const autoHint=document.querySelector('#auto-roles-hint');
+    assert(!autoHint.classList.contains('hidden')&&autoHint.textContent.includes('主键'),'自动预填提示未显示：'+autoHint.textContent);
+    for(let i=0;i<50&&T.current().previewVersion!==T.current().version;i++)await new Promise(r=>setTimeout(r,100));
+    assert(T.current().previewVersion===T.current().version&&T.current().result,'自动预填后未自动重看结果');
     // Switching modes must also clear a completed modal without relying on a hook to hide it.
     await T.switchMode('merge');
     assert(modalHidden(),'切换模式后仍有完成或进度浮层');

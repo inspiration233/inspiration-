@@ -178,3 +178,5 @@ body.modal-open #stage{overflow:hidden}
 .excel-tool .range-pick{display:inline-flex;gap:4px;align-items:center}
 .excel-tool .range-pick input{outline:none}
 .excel-tool .range-pick input:focus{border-color:var(--accent)}
+
+.excel-tool .role-panel{margin-top:14px;padding-top:12px;border-top:1px solid var(--hairline-2)}

@@ -13,10 +13,10 @@
     const cellRef = (row, col) => colName(col) + row;
     const parseCell = raw => { const m = /^\$?([A-Z]+)\$?([1-9]\d*)$/i.exec(raw.trim()); if (!m) throw Error('请使用 A1 这样的单元格坐标。'); return { row: Number(m[2]), col: [...m[1].toUpperCase()].reduce((n, c) => n * 26 + c.charCodeAt(0) - 64, 0) }; };
     const parseRange = raw => { const parts = raw.trim().split(':'); if (parts.length > 2) throw Error('区域格式应为 A3:F4。'); const a = parseCell(parts[0]), b = parseCell(parts[1] || parts[0]); return { r1: Math.min(a.row, b.row), r2: Math.max(a.row, b.row), c1: Math.min(a.col, b.col), c2: Math.max(a.col, b.col) }; };
-    const defaults = () => ({ files: [], feedback: [], baseline: null, active: null, role: 'group', group: [], groupMode: 'combination', filters: [], outputFilters: [], filteredEnabled: false, filteredOptions: {resolutions:{}}, blankGroup: 'separate', outputFields: [], filteredFields: [], keys: [], updates: [], compares: [], groupField: null, resultForm: 'compare', sheetRoles: {}, resolutions: {}, retained: [], shared: [], options: { mode: 'auto', align: 'loose', shape: 'auto', templateIndex: 0, templateSheet: null, hidden: false, source: false, removeSummary: false, keywords: '合计,小计,总计,汇总,累计', stripSerial: true, minFillRatio: 20, renumber: true, title: false, exampleRows: true, retainAll: false, renumberSerial: true }, result: null, payload: null, version: 0, previewVersion: -1, schemeProblems: [] });
+    const defaults = () => ({ files: [], feedback: [], baseline: null, active: null, role: 'group', group: [], groupMode: 'combination', filters: [], outputFilters: [], filteredEnabled: false, filteredOptions: {resolutions:{}}, blankGroup: 'separate', outputFields: [], filteredFields: [], keys: [], updates: [], groupField: null, resultForm: 'compare', sheetRoles: {}, resolutions: {}, retained: [], shared: [], options: { mode: 'auto', align: 'loose', shape: 'auto', templateIndex: 0, templateSheet: null, hidden: false, source: false, removeSummary: false, keywords: '合计,小计,总计,汇总,累计', stripSerial: true, minFillRatio: 20, renumber: true, title: false, exampleRows: true, retainAll: false, renumberSerial: false }, result: null, payload: null, version: 0, previewVersion: -1, schemeProblems: [] });
     const sessions = { merge: defaults(), split: defaults(), reconcile: defaults() };
     sessions.reconcile.role = 'keys';
-    const state = { mode: 'merge', busy: false, merging: false, disposed: false, gridRequest: 0, operationRequest: 0, picking: null, firstCorner: null, rangeDirty: false, offProgress: null };
+    const state = { mode: 'merge', busy: false, merging: false, disposed: false, gridRequest: 0, operationRequest: 0, picking: null, firstCorner: null, rangeDirty: false, offProgress: null, rePreview: false, preloadRequest: 0 };
     const current = () => sessions[state.mode];
     Object.defineProperty(state, 'files', { get: () => current().files });
     const activeSource = () => { const s = current(); return s.active?.bucket === 'baseline' ? s.baseline : s[s.active?.bucket || 'files']?.[s.active?.index || 0]; };
@@ -64,7 +64,7 @@
         if(lost)cfg.mapping_review=true;
       }
     }
-    function clearRoles() { const s=current();s.group=[];s.keys=[];s.updates=[];s.compares=[];s.filters=[];s.outputFilters=[];s.outputFields=[];s.filteredFields=[];s.schemeProblems=[];clearMappings(); }
+    function clearRoles() { const s=current();s.group=[];s.keys=[];s.updates=[];s.filters=[];s.outputFilters=[];s.outputFields=[];s.filteredFields=[];s.schemeProblems=[];clearMappings(); }
     const notice = (message = '', error = false) => { $('notice').textContent = message; $('notice').classList.toggle('hidden', !message); $('notice').classList.toggle('error', error); };
     const fail = error => { notice(error?.message || String(error), true); if (typeof tbToast === 'function') tbToast(error?.message || String(error), 'error'); };
     const call = async (method, payload) => { if (typeof toolbox[method] !== 'function') throw Error('当前引擎尚未提供此功能，请重新启动更新后的程序。'); const reply = await toolbox[method](payload); if (reply?.evt === 'error') throw Error(reply.msg || '处理失败'); return reply?.report ?? reply; };
@@ -78,7 +78,7 @@
       if (state.mode === 'reconcile' && s.files.length) {
         const active = activeSource();
         if (active && isPrimary(active) && active.sheet && (s.keys.length || s.sheetRoles[active.sheet]))
-          s.sheetRoles[active.sheet] = { keys: [...s.keys], updates: [...s.updates], compares: [...s.compares], groupField: s.groupField };
+          s.sheetRoles[active.sheet] = { keys: [...s.keys], updates: [...s.updates], groupField: s.groupField };
       }
       if (!keepResolutions) { s.resolutions = {}; s.retained = []; s.shared = []; s.filteredOptions = {resolutions:{}}; }
       $('result-pane').classList.add('hidden'); $('btn-export').disabled = true;
@@ -97,11 +97,11 @@
       if(pendingMappings.length)$('action-hint').textContent='表头发生变化，请核对字段对应：'+pendingMappings.join('、');
     }
     function newSource(path) { return { path, name: basename(path), configs: {}, sheets: [], sheet: null, excluded: [], status: 'pending' }; }
-    async function loadSource(source, sheet = source.sheet, page, selection, selectionOrigin) {
+    async function loadSource(source, sheet = source.sheet, page, selection, selectionOrigin, lite = false) {
       const cfg = source.configs[sheet];
       const origin=selectionOrigin||(selection?'manual':cfg?.selection_origin||'auto');
       const selected=selection||(origin==='manual'?cfg?.selection:null);
-      const report = await call('preview', { path: source.path, ...(sheet ? { sheet } : {}), ...(selected ? { selection:selected } : {}), selection_origin:origin, start_row: page?.row || 1, start_col: page?.col || 1, row_limit: 80, col_limit: 40 });
+      const report = await call('preview', { path: source.path, ...(sheet ? { sheet } : {}), ...(selected ? { selection:selected } : {}), selection_origin:origin, start_row: page?.row || 1, start_col: page?.col || 1, row_limit: lite ? 1 : 80, col_limit: lite ? 1 : 40 });
       source.sheets = report.sheets || []; source.status = 'ok'; source.reason = '';
       if (!source.sheet) source.sheet = report.sheet;
       const previous = source.configs[report.sheet];
@@ -128,9 +128,9 @@
         // 回填: 切表时载入该表自己的角色; 没配置过的表从空白开始(不继承上一表)
         if (state.mode === 'reconcile' && source === primary()) {
           const s2 = current(), remembered = s2.sheetRoles[source.sheet];
-          const r = remembered || { keys: [], updates: [], compares: [], groupField: null };
+          const r = remembered || { keys: [], updates: [], groupField: null };
           s2.keys = [...r.keys]; s2.updates = [...r.updates];
-          s2.compares = [...r.compares]; s2.groupField = r.groupField;
+          s2.groupField = r.groupField;
         }
         // 文件加入后工作区在首屏之下, 不自动滚过去用户根本找不到点击区
         if (newlyOpened) $('workspace').scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -151,6 +151,20 @@
       const source = bucket === 'baseline' ? s.baseline : s[bucket][bucket === 'feedback' ? s[bucket].length - 1 : 0];
       renderFiles(); await showSource(source, bucket, bucket === 'feedback' ? s[bucket].length - 1 : 0);
       if (state.mode === 'merge') recommend();
+      if (bucket === 'feedback') preloadFeedbackFiles();
+    }
+    async function preloadFeedbackFiles() {
+      // 反馈文件添加后自动轻量加载字段结构(不取网格内容)——文件行的
+      // 列匹配统计不用逐个点开; 用户点开时 showSource 会完整重载覆盖
+      const s = current(), token = ++state.preloadRequest;   // 独立计数: 不打断用户的预览请求
+      for (const file of [...s.feedback]) {
+      const s = current(), token = ++state.preloadRequest;   // 独立计数: 不打断用户的预览请求
+        if (file.status === 'bad' || file.sheets.length) continue;
+        try { await loadSource(file, file.sheet || undefined, null, null, null, true); }
+        catch (e) { /* 单份失败不影响其余 */ }
+        if (!s.feedback.includes(file)) continue;
+        renderFiles();
+      }
     }
     async function addFromPaths(paths, bucket = 'files') {
       if (!paths?.length) return;
@@ -169,7 +183,20 @@
             row.ondrop = e => { const raw = e.dataTransfer.getData('application/x-excel-source'); if (!raw) return; e.preventDefault(); e.stopPropagation(); const from = Number(raw); const selected = activeSource(),template=s.files[s.options.templateIndex]; const [fileToMove] = s.files.splice(from, 1); s.files.splice(index, 0, fileToMove); s.options.templateIndex=Math.max(0,s.files.indexOf(template));s.active = { bucket, index: s.files.indexOf(selected) }; invalidate(); renderFiles(); };
           }
           const name = make('span', 'file-name', file.name); name.title = file.path;
-          row.append(name, make('span', 'file-meta', file.status === 'bad' ? file.reason : file.sheets.length ? `${file.sheets.length} 张工作表` : '点击预览'));
+          let metaText = file.status === 'bad' ? file.reason : file.sheets.length ? `${file.sheets.length} 张工作表` : '点击预览';
+          if (bucket === 'feedback' && state.mode === 'reconcile' && file.status !== 'bad') {
+            const pc = primaryConfig(), fc = config(file);
+            if (pc?.report?.fields && fc?.report?.fields) {
+              const total = pc.report.fields.filter(f => !f.empty).length;
+              const map = { ...uiMappingFor(pc.report.fields, fc.report.fields) };
+              const fm = current().result?.field_mappings?.find(m => m.name === file.name && (!m.sheet || m.sheet === (file.sheet || fc.sheet)));
+              if (fm) for (const [k, v] of Object.entries(fm.mapping)) map[Number(k)] = v;
+              const matched = Object.keys(map).filter(k => pc.report.fields.some(f => f.index === Number(k) && !f.empty)).length;
+              const unmatched = Math.max(0, total - matched);
+              metaText += ` · 共${total}列${unmatched > 0 ? ` · ${unmatched}列未对应` : ' · 全部对应'}`;
+            }
+          }
+          row.append(name, make('span', 'file-meta', metaText));
           const remove = make('button', 'ghost rm', '×'); remove.setAttribute('aria-label', '移除 ' + file.name);
           remove.onclick = e => { e.stopPropagation(); const template=s.files[s.options.templateIndex];files.splice(index, 1);if(bucket==='files'){if(state.mode!=='merge')clearRoles();else clearMappings();}s.options.templateIndex=Math.max(0,s.files.indexOf(template));invalidate(); s.active = null; renderFiles(); showSource(s.files[0]); };
           row.append(remove); row.onclick = () => showSource(file, bucket, index); container.append(row);
@@ -177,6 +204,8 @@
       };
       render($('file-rows'), s.files, 'files'); render($('feedback-rows'), s.feedback, 'feedback');
       $('feedback-count').textContent = s.feedback.length ? `· ${s.feedback.length} 份` : '';
+      const clearFeedback = $('btn-clear-feedback');
+      clearFeedback.classList.toggle('hidden', !s.feedback.length);
       $('baseline-name').textContent = s.baseline?.name || '未选择'; $('baseline-name').style.cursor = s.baseline ? 'pointer' : '';
       $('operation-options').classList.toggle('hidden', !s.files.length);
       setOptions($('opt-template'), s.files.map((f, i) => [i, f.name]), Math.min(s.options.templateIndex, s.files.length - 1));
@@ -303,7 +332,7 @@
       if (state.mode === 'merge') { bar.append(make('span', '', '蓝色=标题行，浅蓝=数据行；识别有误时可修改上方范围。')); return; }
       if (!isPrimary(activeSource())) { bar.append(make('span', '', '当前查看反馈或旧版本；选择列请先点选底稿文件。')); return; }
       bar.append(make('span', '', '选用途，再点列标题（可拖过连选、Shift 选一段）：'));
-      const choices = state.mode === 'split' ? [['group','拆分依据'],['outputFields','输出字段']] : [['groupField','单位列（分组）'],['keys','认记录（主键）'],['updates','允许修改的列'],['compares','改后标红的列'],...(current().filteredEnabled?[['filteredFields','筛选结果字段']]:[])];
+      const choices = state.mode === 'split' ? [['group','拆分依据'],['outputFields','输出字段']] : [['groupField','单位列（分组）'],['keys','认记录（主键）'],['updates','允许修改的列'],...(current().filteredEnabled?[['filteredFields','筛选结果字段']]:[])];
       for (const [value,label] of choices) { const button = make('button', current().role === value ? 'active' : '', label); button.onclick = () => { current().role = value; renderToolbar(); renderGrid(config(activeSource()).report); }; bar.append(button); }
       // 批量操作: 全选(排除互斥列)/清空, 列多时不用逐列点
       {
@@ -316,7 +345,7 @@
             const cfg = config(activeSource()); if (!cfg) return;
             const skip = new Set(state.mode === 'reconcile' && s.role === 'updates' ? [...s.keys, ...(s.groupField != null ? [s.groupField] : [])] : []);
             let n = 0; for (const f of cfg.report.fields) if (!skip.has(f.index) && addFieldIndexes(s, f.index, f.index)) n++;
-            if (n) { commitFieldPick(cfg); notice(`已批量加入 ${n} 列。`); }
+            if (n) { commitFieldPick(cfg); notice(`已批量加入 ${n} 列${state.mode === 'reconcile' && s.role === 'updates' ? '（自动跳过主键和单位列）' : ''}。`); }
           };
           batch.append(all);
         }
@@ -333,22 +362,33 @@
         const rangeBox = make('span', 'range-pick');
         const rangeInput = make('input');
         rangeInput.type = 'text';
-        rangeInput.placeholder = '范围如 3-8';
+        rangeInput.placeholder = '如 3-8 或 a-e,h,k-z';
         rangeInput.style.cssText = 'width:80px;padding:3px 6px;font-size:12px;border:1px solid var(--hairline-2);border-radius:6px';
         rangeInput.setAttribute('aria-label', '列范围');
         const rangeBtn = make('button', 'ghost compact', '选这段');
         const doRange = () => {
           const text = rangeInput.value.trim();
-          const m = text.match(/^(\d+)\s*-\s*(\d+)$/) || text.match(/^([A-Za-z]+)\s*-\s*([A-Za-z]+)$/);
-          if (!m) { notice('范围格式：起始-结束，如 3-8 或 C-H。', true); return; }
-          let lo, hi;
-          if (/^\d+$/.test(m[1])) { lo = +m[1]; hi = +m[2]; }
-          else { lo = m[1].toUpperCase().charCodeAt(0) - 64; hi = m[2].toUpperCase().charCodeAt(0) - 64; }
-          if (lo > hi) [lo, hi] = [hi, lo];
+          if (!text) { notice('范围格式：如 3-8、C-H 或 a-e,h,k-z。', true); return; }
+          const letters = w => [...w.toUpperCase()].reduce((n, c) => n * 26 + c.charCodeAt(0) - 64, 0);
+          // 每段: 单列(如 h / 8)或范围(如 a-e / 3-8); 逗号/顿号/分号分隔多段
+          const parseOne = seg => {
+            seg = seg.trim(); if (!seg) return null;
+            let m = seg.match(/^(\d+)(?:\s*-\s*(\d+))?$/);
+            if (m) return [+m[1], +(m[2] ?? m[1])];
+            m = seg.match(/^([A-Za-z]+)(?:\s*-\s*([A-Za-z]+))?$/);
+            if (m) return [letters(m[1]), letters(m[2] ?? m[1])];
+            return null;
+          };
+          const ranges = text.split(/[,，;；、]/).map(parseOne);
+          if (ranges.some(r => !r)) { notice('范围格式：如 3-8、C-H 或 a-e,h,k-z。', true); return; }
           const cfg = config(activeSource());
           if (!cfg) return;
-          const n = addFieldIndexes(current(), lo, hi);
-          if (n) { commitFieldPick(cfg); notice(`已批量加入 ${n} 列。`); rangeInput.value = ''; }
+          const s = current();
+          // 回填"允许修改的列"跳过主键/分组列(与全选一致), 选入会因互斥被阻断
+          const skip = new Set(state.mode === 'reconcile' && s.role === 'updates' ? [...s.keys, ...(s.groupField != null ? [s.groupField] : [])] : []);
+          let n = 0;
+          for (const [lo, hi] of ranges) for (let i = Math.min(lo, hi); i <= Math.max(lo, hi); i++) { if (skip.has(i)) continue; n += addFieldIndexes(s, i, i); }
+          if (n) { commitFieldPick(cfg); notice(`已批量加入 ${n} 列${skip.size ? '（自动跳过主键和单位列）' : ''}。`); rangeInput.value = ''; }
           else notice('该范围内没有可选的字段。', true);
         };
         rangeBtn.onclick = doRange;
@@ -365,10 +405,14 @@
     function addFieldIndexes(s, from, to) {
       const cfg = config(activeSource()); if (!cfg) return 0;
       const known = new Set(cfg.report.fields.map(f => f.index));
+      // 允许修改的列与主键/分组列互斥: 所有入口(单点/拖选/全选/范围)统一跳过
+      const blocked = new Set(state.mode === 'reconcile' && s.role === 'updates'
+        ? [...s.keys, ...(s.groupField != null ? [s.groupField] : [])] : []);
       const lo = Math.min(from, to), hi = Math.max(from, to);
-      let added = 0;
+      let added = 0, skipped = 0;
       for (let i = lo; i <= hi; i++) {
         if (!known.has(i)) continue;
+        if (blocked.has(i)) { skipped++; continue; }
         if (state.mode === 'split' && s.role !== 'outputFields') {
           if (!s.group.some(g => g.kind === 'field' && g.index === i)) { s.group.push({ kind: 'field', index: i }); added++; }
         } else if (state.mode === 'reconcile' && s.role === 'groupField') {
@@ -377,6 +421,7 @@
           if (!s[s.role].includes(i)) { s[s.role].push(i); added++; }
         }
       }
+      state.lastPickSkipped = skipped;
       return added;
     }
     function commitFieldPick(cfg) {
@@ -403,6 +448,11 @@
     function selectField(index, axis, ev) {
       const source = activeSource(), cfg = config(source); if (!cfg || state.mode === 'merge') return;
       if (state.sweepCommit) { state.sweepCommit = false; return; }
+      if (state.mode === 'reconcile' && current().role === 'updates') {
+        const s = current();
+        if (s.keys.includes(index) || s.groupField === index)
+          notice('主键和单位列不能作为允许修改的列，已跳过。', true);
+      }
       if (ev && ev.shiftKey && state.lastFieldPick && state.lastFieldPick.mode === state.mode
           && state.lastFieldPick.axis === axis && selectionGuards(index, axis)) {
         const n = addFieldIndexes(current(), state.lastFieldPick.index, index);
@@ -459,6 +509,19 @@
     }
     function renderRoles() {
       const s = current();
+      // 自动预填提示: 当前配置仍是自动应用的那套时才显示, 用户一改动即消失
+      const autoHint = $('auto-roles-hint');
+      if (autoHint) {
+        const ar = s.autoRoles, unchanged = ar && ar.group === s.groupField
+          && Array.isArray(s.keys) && s.keys.length === ar.keys.length
+          && s.keys.every((k, i) => k === ar.keys[i]);
+        const parts = [];
+        if (unchanged && ar.group != null) parts.push('分组列「' + fieldChipLabel(ar.group) + '」');
+        if (unchanged && ar.keys.length) parts.push('主键「' + ar.keys.map(fieldChipLabel).join('、') + '」');
+        autoHint.classList.toggle('hidden', !parts.length);
+        if (parts.length) autoHint.textContent = (ar.source === 'meta'
+          ? '已沿用上一轮回填的配置：' : '已按表头自动设置 ') + parts.join('、') + '，点列标题可改。';
+      }
       const chips = (id, values, label, remove, roleKey) => { const box = $(id); box.replaceChildren();
         if (!values.length) box.append(make('span','empty-chip','尚未选择（点表格的 A、B、C 列头）'));
         // 入口按钮常驻: 先把"当前点选用途"切到本区, 再跳到表格——
@@ -483,8 +546,8 @@
       if(s.groupField!=null){const chip=make('button','field-chip',fieldChipLabel(s.groupField)+' ×');chip.onclick=()=>{s.groupField=null;invalidate();renderRoles();renderToolbar();if(config(activeSource()))renderGrid(config(activeSource()).report);};unitBox.append(chip);}
       else unitBox.append(make('span','empty-chip','未选择 · 按主键值直接匹配（不分组）'));
       unitBox.append(unitGo);
-      for(const [id,key] of [['key-chips','keys'],['update-chips','updates'],['compare-chips','compares'],['output-chips','outputFields'],['filtered-field-chips','filteredFields']]) chips(id,s[key],fieldChipLabel,i=>s[key].splice(i,1),key);
-      $('blank-group').value=s.blankGroup;$('split-example-rows').checked=!!s.options.exampleRows;$('split-retain-all').checked=!!s.options.retainAll;$('split-renumber').checked=s.options.renumberSerial!==false;
+      for(const [id,key] of [['key-chips','keys'],['update-chips','updates'],['output-chips','outputFields'],['filtered-field-chips','filteredFields']]) chips(id,s[key],fieldChipLabel,i=>s[key].splice(i,1),key);
+      $('blank-group').value=s.blankGroup;$('split-example-rows').checked=!!s.options.exampleRows;$('split-retain-all').checked=!!s.options.retainAll;$('split-renumber').checked=s.options.renumberSerial===true;
       if(state.mode==='reconcile'){$('result-form').value=s.resultForm;$('result-form').onchange=()=>{s.resultForm=$('result-form').value;invalidate();};}
       $('group-by-sheet').checked=s.group.some(g=>g.kind==='sheet');$('group-mode').value=s.groupMode;
       renderToolbar();
@@ -501,6 +564,19 @@
         field.onchange=()=>{filter.field=field.value?Number(field.value):null;invalidate();};op.onchange=()=>{filter.op=op.value;invalidate();renderFilters();};value.oninput=()=>{filter.value=value.value;invalidate();};end.onchange=()=>{filter.end_field=end.value?Number(end.value):null;invalidate();};rm.onclick=()=>{list.splice(index,1);invalidate();renderFilters();};
         row.append(field,op,end,value,rm);box.append(row);
       });}
+    }
+    function uiMappingFor(targetFields, sourceFields) {
+      // 界面层即时匹配: 唯一同名 + 同名同位置(与引擎同名/位置分支一致)
+      const map = {};
+      const sigBy = {};
+      for (const f of sourceFields) { const s = matchSignature(f); if (s && !f.empty) (sigBy[s] = sigBy[s] || []).push(f); }
+      for (const f of targetFields) {
+        const s = matchSignature(f); if (!s || f.empty || String(s).startsWith('@empty:')) continue;
+        const arr = sigBy[s] || [];
+        if (arr.length === 1 && targetFields.filter(t => !t.empty && matchSignature(t) === s).length === 1) { map[f.index] = arr[0].index; continue; }
+        if (arr.some(x => x.index === f.index)) map[f.index] = f.index;
+      }
+      return map;
     }
     function autoMap(targetFields, sourceFields) {
       const result={};
@@ -524,11 +600,21 @@
       if(!target){panel.classList.add('hidden');return;}
       panel.classList.remove('hidden');const targetFields=target.report.fields||[],sourceFields=cfg.report.fields||[];
       $('mapping-review').classList.toggle('hidden',!cfg.mapping_review);if(cfg.mapping_review)panel.open=true;
-      const mapping={...autoMap(targetFields,sourceFields),...cfg.field_map};
+      // 引擎的真实对应决策回显(重名列按位置/拆分属性对上的也如实显示);
+      // 用户手动指定的 field_map 始终最优先
+      const engineMap={};
+      if(state.mode==='reconcile'&&current().result?.field_mappings){
+        const fm=current().result.field_mappings.find(m=>m.name===source.name&&(!m.sheet||m.sheet===source.sheet));
+        if(fm)for(const [k,v] of Object.entries(fm.mapping))engineMap[Number(k)]=v;   // JSON 键是字符串
+      }
+      // 合并模式保持"唯一同名"不猜重名(人工指定); 回填才有同名同位置预匹配
+      const mapping={...(state.mode==='reconcile'?uiMappingFor(targetFields,sourceFields):autoMap(targetFields,sourceFields)),...engineMap,...cfg.field_map};
       const table=make('table','mapping-table'),head=make('tr');head.append(make('th','','底表 / 模板字段'),make('th','','当前文件字段'));table.append(head);
       let missing=0;
       for(const field of targetFields){const tr=make('tr'),td=make('td'),select=make('select');setOptions(select,[['','不对应 / 待选择'],...sourceFields.map(f=>[f.index,fieldText(f,cfg.selection.axis)])],mapping[field.index]??'');if(!select.value)missing++;select.onchange=()=>{cfg.field_map[field.index]=select.value?Number(select.value):null;invalidate();};tr.append(make('td','',fieldText(field,target.selection.axis)));td.append(select);tr.append(td);table.append(tr);}
-      $('mapping-table').replaceChildren(table);$('mapping-summary').textContent=missing?`· ${missing} 个未对应`:'· 已按唯一同名字段对应';
+            $('mapping-table').replaceChildren(table);
+      const prechecked=state.mode==='reconcile'&&current().result?.field_mappings?.length;
+      $('mapping-summary').textContent=missing?(prechecked?`· ${missing} 个未对应（需人工指定或该列不存在）`:`· ${missing} 个待自动对应——点「预览结果」后按同名/位置/拆分属性自动匹配`):'· 已自动对应';
     }
     function recommend() {
       const s=current(),sources=s.files.filter(f=>f.sheets.length);
@@ -544,7 +630,7 @@
       $('source-title').textContent={merge:'第 1 步 · 选择文件',split:'第 1 步 · 选择文件',reconcile:'第 1 步 · 选底稿与反馈'}[state.mode];
       $('source-help').textContent=state.mode==='merge'?'可一次多选，也可直接拖入。':'底稿：要保留并更新的表。';
       $('btn-add-folder').classList.toggle('hidden',state.mode!=='merge');$('reconcile-sources').classList.toggle('hidden',state.mode!=='reconcile');
-      for(const mode of ['merge','split','reconcile'])$(mode+'-options').classList.toggle('hidden',mode!==state.mode);
+      for(const mode of ['merge','split','reconcile'])$(mode+'-options').classList.toggle('hidden',mode!==state.mode);$('role-panel').classList.toggle('hidden',state.mode!=='reconcile');
       root.querySelectorAll('[name="merge-output"]').forEach(input=>input.checked=input.value===o.mode);
       for(const [id,key] of [['opt-shape','shape'],['opt-align','align'],['opt-keywords','keywords']])$(id).value=o[key];
       $('opt-fill-ratio').value=o.minFillRatio;
@@ -578,15 +664,19 @@
       if(state.mode==='split'){
         if(!s.group.length)throw Error('请点选至少一个拆分字段，或选择命名单元格 / 工作表名。');
         for(const f of s.filters)if(!f.field||!String(f.value??'').trim()||(f.op==='interval'&&!f.end_field))throw Error('请补全筛选字段、条件值，以及区间条件的截止字段。');
-        return {...base,group_fields:s.group.map(g=>g.kind==='cell'?{kind:'cell',ref:g.ref}:clone(g)),group_mode:s.groupMode,blank_group:s.blankGroup,include_example_rows:!!s.options.exampleRows,retain_all_sheets:!!s.options.retainAll,renumber_serial:s.options.renumberSerial!==false,...(s.outputFields.length?{output_fields:[...s.outputFields]}:{}),filters:clone(s.filters),retain_sheets:clone(s.retained),shared_label_ranges:clone(s.shared),resolutions:clone(s.resolutions),allow_warnings:false};
+        return {...base,group_fields:s.group.map(g=>g.kind==='cell'?{kind:'cell',ref:g.ref}:clone(g)),group_mode:s.groupMode,blank_group:s.blankGroup,include_example_rows:!!s.options.exampleRows,retain_all_sheets:!!s.options.retainAll,renumber_serial:s.options.renumberSerial===true,...(s.outputFields.length?{output_fields:[...s.outputFields]}:{}),filters:clone(s.filters),retain_sheets:clone(s.retained),shared_label_ranges:clone(s.shared),resolutions:clone(s.resolutions),allow_warnings:false};
       }
       if(s.filteredEnabled){if(!s.outputFilters.length)throw Error('请为额外筛选结果至少添加一个条件。');for(const f of s.outputFilters)if(!f.field||!String(f.value??'').trim()||(f.op==='interval'&&!f.end_field))throw Error('请补全额外筛选结果的条件。');}
-      if(!s.feedback.length)throw Error('请添加至少一份反馈文件。');if(!s.keys.length)throw Error('请选择用于对应同一条记录的字段。');if(!s.updates.length)throw Error('请选择允许回填的字段。');
+      if(!s.feedback.length)throw Error('请添加至少一份反馈文件。');
+      // 主键/分组完全没配时放行一次首查——引擎按表头回推荐, 预览响应里自动应用
+      const firstAsk=!s.keys.length&&s.groupField==null;
+      if(!s.keys.length&&!firstAsk)throw Error('请选择用于对应同一条记录的字段。');
+      if(!s.updates.length&&!firstAsk)throw Error('请选择允许回填的字段。');
       const feedback=[];
       for(const file of s.feedback){if(!config(file))await loadSource(file);const fc=config(file);feedback.push({path:file.path,sheet:file.sheet,selection:fc.selection,selection_origin:fc.selection_origin||'auto',field_map:{...autoMap(cfg.report.fields,fc.report.fields),...fc.field_map}});}
       let baseline;
       if(s.baseline){if(!config(s.baseline))await loadSource(s.baseline);const bc=config(s.baseline);baseline={path:s.baseline.path,sheet:s.baseline.sheet,selection:bc.selection,selection_origin:bc.selection_origin||'auto',field_map:{...autoMap(cfg.report.fields,bc.report.fields),...bc.field_map}};}
-      const result = {...base,feedback,...(baseline?{baseline}:{}),key_fields:[...s.keys],update_fields:[...s.updates],compare_fields:[...s.compares],...(s.groupField!=null?{group_field:s.groupField}:{}),result_form:s.resultForm,resolutions:clone(s.resolutions),...(s.filteredEnabled?{filtered_output:{...clone(s.filteredOptions),filters:clone(s.outputFilters),...(s.filteredFields.length?{output_fields:[...s.filteredFields]}:{})}}:{})};
+      const result = {...base,feedback,...(baseline?{baseline}:{}),key_fields:[...s.keys],update_fields:[...s.updates],...(s.groupField!=null?{group_field:s.groupField}:{}),result_form:s.resultForm,resolutions:clone(s.resolutions),...(s.filteredEnabled?{filtered_output:{...clone(s.filteredOptions),filters:clone(s.outputFilters),...(s.filteredFields.length?{output_fields:[...s.filteredFields]}:{})}}:{})};
       // 多表回填: 与每份反馈同名且已配置角色的底稿表页都参与(≥2 张才启用多表链路)
       {
         const baseSrc = primary();
@@ -598,7 +688,7 @@
         for (const sh of common) {
           const roles = s.sheetRoles[sh.name];
           const isCurrent = sh.name === baseSrc.sheet;
-          const r = roles || (isCurrent ? { keys: s.keys, updates: s.updates, compares: s.compares, groupField: s.groupField } : null);
+          const r = roles || (isCurrent ? { keys: s.keys, updates: s.updates, groupField: s.groupField } : null);
           if (!r || !r.keys.length || !r.updates.length) continue;
           const cfg = baseSrc.configs[sh.name];
           if (!cfg || !cfg.selection) { missing.push(`底稿的「${sh.name}」`); continue; }
@@ -610,7 +700,7 @@
           }
           entries.push({ sheet: sh.name, selection: cfg.selection,
             feedback_selections: fbSel,
-            key_fields: [...r.keys], update_fields: [...r.updates], compare_fields: [...r.compares],
+            key_fields: [...r.keys], update_fields: [...r.updates],
             ...(r.groupField != null ? { group_field: r.groupField } : {}) });
         }
         if (missing.length)
@@ -630,10 +720,23 @@
         const report=await call({merge:'mergePreview',split:'splitPreview',reconcile:'reconcilePreview'}[mode],payload);
         if(version!==s.version||mode!==state.mode||request!==state.operationRequest||state.disposed)return false;
         s.payload=clone(payload);if(report.source_fingerprint)s.payload.preview_fingerprint=report.source_fingerprint;
-        s.result=report;s.previewVersion=version;renderResult(report);renderFiles();
+        // 回填预填: 未配置主键/分组列时, 采用引擎按表头给的推荐并自动重看一次结果
+        if(mode==='reconcile'&&!s.keys.length&&s.groupField==null){
+          const sr=report.suggested_roles||{},keys=(sr.key_fields||[]).filter(k=>k!==sr.group_field);
+          if(keys.length||sr.group_field!=null){
+            if(sr.group_field!=null)s.groupField=sr.group_field;
+            if(keys.length)s.keys=keys;
+            s.autoRoles={group:s.groupField,keys:[...s.keys]};
+            invalidate(null,true);renderRoles();renderToolbar();state.rePreview=true;
+            return true;   // 首次结果跳过渲染, 重看后的完整结果一并呈现
+          }
+        }
+        s.result=report;s.previewVersion=version;renderResult(report);renderFiles();renderMapping();
         $('result-pane').scrollIntoView({behavior:'smooth',block:'start'});return true;
       }catch(error){if(!state.disposed&&mode===state.mode)fail(error);return false;}
-      finally{state.busy=false;if(!state.disposed)updateAction();}
+      finally{state.busy=false;if(!state.disposed)updateAction();
+        // 预填推荐应用后需要重看一次结果; 此刻 busy 已复位, 可安全重入
+        if(state.rePreview){state.rePreview=false;if(!state.disposed&&!state.busy)previewResult();}}
     }
     function applyIssueChoice(issue,choice) {
       const s=current();
@@ -656,7 +759,7 @@
         const rowsKnown=groups.length>0&&groups.every(group=>group.row_count!=null);
         const detail=!independent&&records!=null?`${records} 条记录`:rowsKnown?`合计 ${groups.reduce((sum,group)=>sum+Number(group.row_count),0)} 行（含标题和表头）`:'';
         $('result-summary').textContent=`${groups.length} 张结果工作表${detail?' · '+detail:''}`;
-      }else $('result-summary').textContent=state.mode==='reconcile'?`${totals.records??'—'} 条底表记录 · ${totals.changes??changes.length} 处变化${(totals.updates||totals.fills||totals.clears)?`（改值 ${totals.updates??0} · 填写 ${totals.fills??0} · 清空 ${totals.clears??0}）`:''} · 新增 ${totals.additions??changes.filter(c=>c.kind==='new').length}${totals.additions_skipped?`（另 ${totals.additions_skipped} 条未并入）`:''} · ${totals.missing??report.missing?.length??0} 条未收到反馈`:`${groups.length} 个输出文件 · ${totals.records??totals.rows??groups.reduce((n,g)=>n+(Number(g.count)||0),0)} 条记录`;
+      }else $('result-summary').textContent=state.mode==='reconcile'?`${totals.records??'—'} 条底表记录 · ${totals.changes??changes.length} 处变化${(totals.updates||totals.fills||totals.clears)?`（改值 ${totals.updates??0} · 填写 ${totals.fills??0} · 清空 ${totals.clears??0}）`:''} · 新增 ${totals.additions??changes.filter(c=>c.kind==='new').length}${totals.additions_skipped?`（另 ${totals.additions_skipped} 条未并入）`:''} · ${totals.missing??report.missing?.length??0} 条未交回（疑似删除）`:`${groups.length} 个输出文件 · ${totals.records??totals.rows??groups.reduce((n,g)=>n+(Number(g.count)||0),0)} 条记录`;
       const warnings=[...(report.warnings||[])];if(report.retained_sheets?.length)warnings.push('同时保留依赖工作表：'+report.retained_sheets.map(s=>typeof s==='string'?s:s.name).join('、'));
       const messages=warningMessages(warnings),warningBox=$('result-warnings');warningBox.replaceChildren();warningBox.classList.toggle('hidden',!messages.length);
       // 默认折叠: 大文件的兼容提示可能几十条, 不折叠会把下方预览挤到很深
@@ -670,7 +773,7 @@
         panel.append(row);
       }
       $('result-samples').replaceChildren();$('result-changes').replaceChildren();
-      if(state.mode==='reconcile'){renderChanges(changes);if(report.filtered_preview){$('result-samples').append(make('h3','','额外筛选结果'));renderSamples(report.filtered_preview.groups||[]);}}else renderSamples(groups);
+      if(state.mode==='reconcile'){renderChanges(changes,report.marker_colors);if(report.filtered_preview){$('result-samples').append(make('h3','','额外筛选结果'));renderSamples(report.filtered_preview.groups||[]);}}else renderSamples(groups);
       renderMissing(report.missing||[]);
       $('action-hint').textContent=report.can_export?'预览已准备好，可核对后导出。':'预览发现需要处理的问题。';updateAction();
     }
@@ -691,17 +794,19 @@
       };
       groups.forEach((group,index)=>{const quantity=group.count!=null?`${group.count} 条记录`:group.row_count!=null?`共 ${group.row_count} 行`:'';const button=make('button','',`${group.label||group.id||'结果 '+(index+1)}${quantity?' · '+quantity:''}`);button.onclick=()=>show(group,index);tabs.append(button);});box.append(tabs,content);show(groups[0],0);
     }
-    function renderChanges(changes) {
+    function renderChanges(changes, markerColors) {
       const box=$('result-changes');if(!changes.length){box.append(make('p','hint','当前选定范围内没有值变化。'));return;}
       const kindLabels={update:'改值',cancel:'改值(取消)',fill:'填写',clear:'清空',new:'新增',conflict:'冲突'};
       const kindClass={fill:'fill-kind',clear:'clear-kind'};
       const scroll=make('div','changes-scroll'),table=make('table','changes-table'),head=make('tr');for(const title of ['记录','类型','字段','原值','新值','来源'])head.append(make('th','',title));table.append(head);
-      for(const change of changes){const tr=make('tr');tr.append(make('td','',text(change.key)),make('td',kindClass[change.kind]||'',kindLabels[change.kind]||'改值'),make('td','',change.field_title||(change.field==null?'新增记录':fieldLabel(change.field))),make('td','',text(change.before)),make('td',change.marked?'changed-value':'',text(change.after)),make('td','',typeof change.source==='object'?`${basename(change.source.path||'')} / ${change.source.sheet||''}`:text(change.source)));table.append(tr);}
-      scroll.append(table);box.append(scroll,make('p','hint','红色表示选定比较字段中的调整。导出时保留原表样式，并对确认的调整标红。'));
+      for(const change of changes){const tr=make('tr');tr.append(make('td','',text(change.key)),make('td',kindClass[change.kind]||'',kindLabels[change.kind]||'改值'),make('td','',change.field_title||(change.field==null?'新增记录':fieldLabel(change.field))),make('td','',text(change.before)),make('td','',text(change.after)),make('td','',typeof change.source==='object'?`${basename(change.source.path||'')} / ${change.source.sheet||''}`:text(change.source)));table.append(tr);}
+      const red=(markerColors&&markerColors[0]||'FFFF0000').slice(-6);
+      const redNote=red!=='FF0000'?`（底表已用红色，标记自动改用 #${red}）`:'';
+      scroll.append(table);box.append(scroll,make('p','hint',`导出时保留原表样式，改动格整格标红填充${redNote}。`));
     }
     function renderMissing(missing) {
       const box=$('missing-records');box.replaceChildren();if(!missing.length)return;
-      const details=make('details'),summary=make('summary','',`${missing.length} 条记录未收到反馈，保留现有内容 · 点击查看全部`),scroll=make('div','sample-scroll'),table=make('table','sample-table');
+      const details=make('details'),summary=make('summary','',`${missing.length} 条记录未交回（疑似被删除，已保留原内容） · 点击查看全部`),scroll=make('div','sample-scroll'),table=make('table','sample-table');
       const header=make('tr');header.append(make('th','','记录'),make('th','','底表位置'),make('th','','查看'));table.append(header);
       const axis=primaryConfig()?.selection.axis;
       for(const item of missing){const row=make('tr'),record=make('td','',text(item.key??item)),position=make('td','',item.position?`第 ${item.position} ${axis==='columns'?'列':'行'}`:'—'),action=make('td');
@@ -744,7 +849,7 @@
     function uniqueField(saved,fields) { const signature=matchSignature(saved);if(!signature||saved.empty||String(signature).startsWith('@empty:'))return null;const matches=fields.filter(f=>(saved.match_signature!==undefined?matchSignature(f):f.signature)===signature&&!f.empty);return matches.length===1?matches[0]:null; }
     function captureRoles(fields=fieldList()) {
       const s=current(),lookup=index=>identity(fields.find(f=>f.index===Number(index)));
-      return {outputFields:s.outputFields.map(lookup),filteredFields:s.filteredFields.map(lookup),keys:s.keys.map(lookup),updates:s.updates.map(lookup),compares:s.compares.map(lookup),group:s.group.map(g=>g.kind==='field'?{kind:'field',field:lookup(g.index)}:g.kind==='cell'?{...g,expected:g.expected??primaryConfig()?.report.cells?.find(c=>cellRef(c.row,c.col)===g.ref)?.value}:clone(g)),filters:s.filters.map(f=>({...f,field:lookup(f.field),end_field:f.end_field?lookup(f.end_field):null})),outputFilters:s.outputFilters.map(f=>({...f,field:lookup(f.field),end_field:f.end_field?lookup(f.end_field):null}))};
+      return {outputFields:s.outputFields.map(lookup),filteredFields:s.filteredFields.map(lookup),keys:s.keys.map(lookup),updates:s.updates.map(lookup),group:s.group.map(g=>g.kind==='field'?{kind:'field',field:lookup(g.index)}:g.kind==='cell'?{...g,expected:g.expected??primaryConfig()?.report.cells?.find(c=>cellRef(c.row,c.col)===g.ref)?.value}:clone(g)),filters:s.filters.map(f=>({...f,field:lookup(f.field),end_field:f.end_field?lookup(f.end_field):null})),outputFilters:s.outputFilters.map(f=>({...f,field:lookup(f.field),end_field:f.end_field?lookup(f.end_field):null}))};
     }
     function showSchemeProblems() {
       const s=current();if(!s.schemeProblems.length)return;
@@ -755,7 +860,7 @@
     function restoreRoles(saved,fields,validateCells=true) {
       const s=current(),problems=[];
       const resolve=(field,role)=>{const match=uniqueField(field,fields);if(!match)problems.push(role+'：'+field.label);return match?.index;};
-      for(const [key,label]of[['keys','认记录（主键）'],['updates','允许修改的列'],['compares','改后标红的列'],['outputFields','输出字段'],['filteredFields','额外筛选结果字段']])s[key]=(saved[key]||[]).map(f=>resolve(f,label)).filter(v=>v!==undefined);
+      for(const [key,label]of[['keys','认记录（主键）'],['updates','允许修改的列'],['outputFields','输出字段'],['filteredFields','额外筛选结果字段']])s[key]=(saved[key]||[]).map(f=>resolve(f,label)).filter(v=>v!==undefined);
       if(saved.groupField!=null){const g=resolve(saved.groupField,'单位列（分组）');s.groupField=g!==undefined?g:null;}
       s.resultForm=saved.resultForm==='direct'?'direct':'compare';
       s.group=[];
@@ -855,6 +960,7 @@
     for(const [id,key]of [['opt-hidden','hidden'],['opt-source','source'],['opt-summary','removeSummary'],['opt-serial-strip','stripSerial'],['opt-serial-num','renumber'],['opt-title','title']])$(id).onchange=()=>{current().options[key]=$(id).checked;invalidate();recommend();};
     $('opt-template').onchange=()=>{current().options.templateIndex=Number($('opt-template').value);current().options.templateSheet=null;renderFiles();clearMappings();invalidate();renderMapping();};
     $('opt-template-sheet').onchange=()=>{current().options.templateSheet=$('opt-template-sheet').value;clearMappings();invalidate();renderMapping();};
+    $('btn-clear-feedback').onclick=()=>{const s=current();if(!s.feedback.length)return;s.feedback=[];s.active=null;invalidate();renderFiles();showSource(s.files[0]);};
     $('mapping-reviewed').onclick=()=>{const cfg=config(activeSource());if(!cfg)return;cfg.mapping_review=false;invalidate('已采用当前字段对应，请重新预览核对。');renderMapping();};
     const finishSweep = () => {
       const sweep = state.sweep; if (!sweep) return;
