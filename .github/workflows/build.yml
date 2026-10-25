@@ -12,8 +12,7 @@ jobs:
       matrix:
         include:
           - { os: macos-14, arch: arm64, tag: AppleSilicon }
-          # Intel 版为尽力而为: GitHub 正在淘汰 Intel mac 机器, 排队可能极长
-          - { os: macos-13, arch: x64, tag: Intel, optional: true }
+          # Intel mac 已按用户要求移除(2026-10-25): 机器淘汰排队极长且无人使用
     runs-on: ${{ matrix.os }}
     timeout-minutes: 40
     continue-on-error: ${{ matrix.optional || false }}
