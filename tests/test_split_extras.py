@@ -371,16 +371,7 @@ def test_serial_kept_original_by_default(tmp_path):
         ws.append([f"=ROW()-1", u, i])
     wb.save(src0); wb.close()
     src = tmp_path / "带缓存.xlsx"          # 注入缓存值 1,2,3,4
-    with ZF(src0) as zin, ZF(src, "w") as zout:
-        for name in zin.namelist():
-            data = zin.read(name)
-            if name == "xl/worksheets/sheet1.xml":
-                text = data.decode()
-                for i in range(2, 6):
-                    text = text.replace(f'<c r="A{i}"><f>ROW()-1</f><v></v></c>',
-                                        f'<c r="A{i}"><f>ROW()-1</f><v>{i - 1}</v></c>', 1)
-                data = text.encode()
-            zout.writestr(name, data)
+    _inject_cached_serial(src0, src, "A", 2, 5)
     payload = {"path": str(src), "sheet": "数据",
                "selection": {"axis": "rows", "header_start": 1, "header_end": 1,
                              "data_start": 2, "data_end": 5, "field_start": 1, "field_end": 3},
@@ -415,17 +406,7 @@ def test_horizontal_serial_formula_frozen_to_cached(tmp_path):
         ws.cell(3, c).value = c * 10
     wb.save(src0); wb.close()
     src = tmp_path / "带缓存.xlsx"          # 注入缓存值 1..4
-    with ZF(src0) as zin, ZF(src, "w") as zout:
-        for name in zin.namelist():
-            data = zin.read(name)
-            if name == "xl/worksheets/sheet1.xml":
-                text = data.decode()
-                for c in range(2, 6):
-                    col = get_column_letter(c)
-                    text = text.replace(f'<c r="{col}1"><f>COLUMN()-1</f><v></v></c>',
-                                        f'<c r="{col}1"><f>COLUMN()-1</f><v>{c - 1}</v></c>', 1)
-                data = text.encode()
-            zout.writestr(name, data)
+    _inject_cached_serial(src0, src, "1", None, None, horizontal=True, cols=range(2, 6))
     payload = {"path": str(src), "sheet": "数据",
                "selection": {"axis": "columns", "header_start": 1, "header_end": 1,
                              "data_start": 2, "data_end": 5, "field_start": 1, "field_end": 3},
@@ -548,3 +529,24 @@ def test_xls_split_preserves_values_and_merges(tmp_path):
             found = True
         w.close()
     assert found
+
+def _inject_cached_serial(src0, dest, anchor, row_from, row_to, horizontal=False, cols=None):
+    """把公式的空缓存值替换为给定数值——openpyxl 各版序列化形态不同
+    (<v> 缺失 / 自闭合 / 空标签), 用正则统一处理。"""
+    import re as _re
+    from zipfile import ZipFile as ZF
+    with ZF(src0) as zin, ZF(dest, "w") as zout:
+        for name in zin.namelist():
+            data = zin.read(name)
+            if name == "xl/worksheets/sheet1.xml":
+                text = data.decode()
+                targets = ([f"{get_column_letter(c)}{anchor}" for c in cols] if horizontal
+                           else [f"{anchor}{r}" for r in range(row_from, row_to + 1)])
+                values = ([c - 1 for c in cols] if horizontal
+                          else list(range(row_from - 1, row_to)))
+                for ref, value in zip(targets, values):
+                    formula = "COLUMN()-1" if horizontal else "ROW()-1"
+                    text = _re.sub(rf'(<c r="{ref}"[^>]*><f[^>]*>{_re.escape(formula)}</f>)(<v\s*/>|<v></v>)?',
+                                   rf'<v>{value}</v>', text, count=1)
+                data = text.encode()
+            zout.writestr(name, data)
