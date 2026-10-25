@@ -1,7 +1,7 @@
 {
   "name": "team-toolbox",
   "productName": "工具箱",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "本地 Excel 工作台：原生合并、拆分与对照回填",
   "main": "main.js",
   "scripts": {

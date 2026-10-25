@@ -41,7 +41,9 @@ if (angleBackend) app.commandLine.appendSwitch('use-angle', angleBackend);
 app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion,CanvasOopRasterization');
 const themeBg = () => (nativeTheme.shouldUseDarkColors ? '#0f1420' : '#eef1f7');
 const IS_WORKBENCH_TEST = process.argv.includes('--workbench-test') || process.argv.includes('--uitest');
-if (IS_WORKBENCH_TEST || IS_SMOKE) {
+// 真实会话探针: 复用用户真实 userData(不重定向), 只读诊断
+const PROBE_REAL = !!process.env.TOOLBOX_PROBE_REAL;
+if ((IS_WORKBENCH_TEST && !PROBE_REAL) || IS_SMOKE) {
   const os = require('os');
   app.setPath('userData', fs.mkdtempSync(path.join(os.tmpdir(), 'excel-workbench-ui-')));
 }
@@ -187,7 +189,7 @@ function createWindow() {
     win.setAutoHideMenuBar(true);
   }
 
-  if (IS_WORKBENCH_TEST) {
+  if (IS_WORKBENCH_TEST || PROBE_REAL) {
     win.webContents.once('did-finish-load', async () => {
       try {
         const result = await require('./workbench-smoke').run(win, ROOT);
