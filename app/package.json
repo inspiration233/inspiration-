@@ -57,7 +57,8 @@
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
-      "artifactName": "工具箱-Setup-${version}.${ext}"
+      "artifactName": "工具箱-Setup-${version}.${ext}",
+      "createDesktopShortcut": "always"
     },
     "dmg": {
       "artifactName": "工具箱-${version}-${arch}.${ext}"
