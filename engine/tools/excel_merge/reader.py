@@ -20,7 +20,10 @@ from . import recognize
 from .recognize import MergeRange
 
 SUPPORTED_EXTS = {".xlsx", ".xls", ".csv"}
-XLSX_WINDOW = 16   # 结构扫描读取的行数（探测窗口10 + 表头区高4 + 余量）
+XLSX_WINDOW = 16
+# 识别引擎开关: v2=全局候选评分+样式证据(默认), v1=逐行打分; TOOLBOX_RECOG=v1 可一键回滚
+import os as _os
+RECOG_ENGINE = _os.environ.get("TOOLBOX_RECOG", "v2").lower()   # 结构扫描读取的行数（探测窗口10 + 表头区高4 + 余量）
 
 
 # --------------------------------------------------------------- 文件级错误
@@ -186,7 +189,84 @@ def xlsx_merge_ranges(path, sheet_name):
 
 # --------------------------------------------------------------- 各格式读取器
 
+def xlsx_style_facts(path, sheet_name, rows, quick_only=False):
+    """从包 XML 直接读样式事实(read_only 工作簿没有这些属性):
+    冻结窗格(pane@ySplit) / 自动筛选(autoFilter@ref) 为 O(1);
+    quick_only=False 再解析 styles.xml 与窗口行单元格样式(加粗/填充行)。"""
+    from .recognize2 import StyleFacts
+    NS = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
+    try:
+        with zipfile.ZipFile(str(path)) as zf:
+            target = _sheet_xml_paths(zf).get(sheet_name)
+            if not target:
+                return StyleFacts()
+            root = ET.fromstring(zf.read(target))
+            freeze_row = filter_row = 0
+            pane = root.find(f".//{NS}sheetView/{NS}pane")
+            if pane is not None and pane.get("state") == "frozen":
+                freeze_row = int(pane.get("ySplit") or 0) + 1
+            af = root.find(f"{NS}autoFilter")
+            if af is not None and ":" in (af.get("ref") or ""):
+                m = re.match(r"([A-Z]+)([0-9]+)", af.get("ref").split(":")[0])
+                if m:
+                    filter_row = int(m.group(2))
+            if quick_only:
+                return StyleFacts(freeze_row=freeze_row, filter_row=filter_row)
+            sroot = ET.fromstring(zf.read("xl/styles.xml"))
+            bold_fonts, solid_fills = set(), set()
+            fonts = sroot.find(NS + "fonts")
+            if fonts is not None:
+                for i, f in enumerate(fonts.findall(NS + "font")):
+                    b = f.find(NS + "b")
+                    if b is not None and b.get("val") in (None, "1", "true"):
+                        bold_fonts.add(i)
+            fills = sroot.find(NS + "fills")
+            if fills is not None:
+                for i, fl in enumerate(fills.findall(NS + "fill")):
+                    pf = fl.find(NS + "patternFill")
+                    if pf is not None and pf.get("patternType") == "solid":
+                        fg = pf.find(NS + "fgColor")
+                        rgb = fg.get("rgb") if fg is not None else None
+                        if rgb and rgb not in ("00000000", "FFFFFFFF"):
+                            solid_fills.add(i)
+            xfs = sroot.find(NS + "cellXfs")
+            xf_bold, xf_fill = set(), set()
+            if xfs is not None:
+                for i, xf in enumerate(xfs.findall(NS + "xf")):
+                    if int(xf.get("fontId") or 0) in bold_fonts:
+                        xf_bold.add(i)
+                    if int(xf.get("fillId") or 0) in solid_fills:
+                        xf_fill.add(i)
+            bold_rows, filled_rows = [], []
+            for row in root.iter(NS + "row"):
+                r = int(row.get("r") or 0)
+                if r > rows:
+                    break
+                bold = filled = total = 0
+                for c in row.findall(NS + "c"):
+                    if c.get("s") is None:
+                        continue
+                    total += 1
+                    s_idx = int(c.get("s"))
+                    if s_idx in xf_bold:
+                        bold += 1
+                    if s_idx in xf_fill:
+                        filled += 1
+                if total >= 2 and bold / total > 0.6:
+                    bold_rows.append(r)
+                if total >= 2 and filled / total > 0.6:
+                    filled_rows.append(r)
+            return StyleFacts(freeze_row=freeze_row, filter_row=filter_row,
+                              bold_rows=tuple(bold_rows), filled_rows=tuple(filled_rows))
+    except Exception:
+        return StyleFacts()
+
+
 class _XlsxReader:
+    def _style_facts(self, sheet_name, rows, quick_only=False):
+        """窗口行的样式事实: read_only 工作簿缺这些属性, 从包 XML 直接解析。"""
+        return xlsx_style_facts(self.path, sheet_name, rows, quick_only=quick_only)
+
     def __init__(self, path, workbook=None):
         self.path = Path(path)
         self._owns_workbook = workbook is None
@@ -216,21 +296,30 @@ class _XlsxReader:
             return SheetStructure(sheet_name, 0, 0, [], [], empty=True)
 
         ranges = xlsx_merge_ranges(self.path, sheet_name)
+        use_v2 = RECOG_ENGINE in ("v2", "v2full")
+        style = self._style_facts(sheet_name, len(window), quick_only=True) if use_v2 else None
         orientation, confident = "vertical", True
         if override in ("vertical", "horizontal"):
             orientation, confident = override, True      # 人工指定优先
         elif force == 0 and window and (ws.max_row or 0) <= 20000 and (ws.max_column or 0) <= 500:
+            # 方向判定保留 v1 信号净分制: v2 的双视图分数对比缺校准根基(样本量/
+            # 宽度/稀疏度不同), 实测方向错误率反而升高; v2 只接管表头行/高度/置信度
             orientation, confident = recognize.detect_orientation(window)
         if orientation == "horizontal":
             if recognize.cross_table_shape(window):
                 return self._structure_native_cross(ws, sheet_name, ranges, confident)
             return self._structure_transposed(ws, sheet_name, ranges, confident)
+        low_confidence = False
+        extra_warnings = []
+        # 组合策略(默认): v1 逐行打分为基线; v1 低置信(前两名贴脸)或 v2 样式
+        # 命中(冻结/筛选=用户钦定表头位置)时, 由 v2 全局评分接管 —— 常规表零
+        # 扰动, 疑难表获得交界突变/同构性/样式证据更强的判断。
+        # TOOLBOX_RECOG=v2full 可全量启用 v2 继续打磨。
+        det = recognize.detect_header_row(window)
         if force > 0:
-            det = recognize.detect_header_row(window)
             header_row = force
             height = recognize.detect_region_height(window, header_row, ranges)
         else:
-            det = recognize.detect_header_row(window)
             header_row = det.header_row or 1
             header_row = recognize.extend_header_up(window, header_row, ranges)
             post = recognize.detect_header_row_post(window, header_row, ranges)
@@ -238,6 +327,34 @@ class _XlsxReader:
                 header_row, height = post
             else:
                 height = recognize.detect_region_height(window, header_row, ranges)
+            if use_v2 and RECOG_ENGINE != "v2full" and window:
+                from . import recognize2
+                if (det.low_confidence or style.freeze_row or style.filter_row)                         and not (style.bold_rows or style.filled_rows):
+                    # 样式介入的场景(低置信/冻结/筛选)都升级到完整样式再裁决:
+                    # 加粗/填充行是区分同级候选的关键证据
+                    style = self._style_facts(sheet_name, len(window))
+                guess = recognize2.detect_structure(window, ranges, style)
+                styled = guess.header_row and (guess.evidence.get("freeze")
+                                               or guess.evidence.get("filter"))
+                if styled and guess.header_row != header_row:
+                    # 冻结/筛选位置=用户亲手指定的表头, 唯一有权推翻 v1 的证据
+                    header_row, height = guess.header_row, guess.height
+                    extra_warnings.append(
+                        f"已按冻结/筛选位置认定表头在第 {header_row} 行。")
+                elif det.low_confidence and guess.header_row                         and guess.header_row != header_row and not styled:
+                    # v1 没把握时不抢答: 把 v2 的不同意见放进提示供人工核对
+                    extra_warnings.append(
+                        f"表头位置把握较低：按第 {header_row} 行处理，"
+                        f"另一种判断是第 {guess.header_row} 行，请核对。")
+            elif RECOG_ENGINE == "v2full" and window:
+                from . import recognize2
+                guess = recognize2.detect_structure(window, ranges, style)
+                if guess.header_row:
+                    header_row, height = guess.header_row, guess.height
+                    low_confidence = not guess.confidence
+                    hint = guess.runner_up_hint()
+                    if hint:
+                        extra_warnings.append(hint)
         keys = recognize.flatten_keys(window, header_row, height, ranges)
         st = SheetStructure(
             sheet_name=sheet_name,
@@ -251,11 +368,12 @@ class _XlsxReader:
             orientation_confident=confident,
             pre_rows=[list(r) for r in window[:header_row - 1]],
             title=recognize.detect_title(window, header_row, ranges),
-            low_confidence=det.low_confidence,
+            low_confidence=det.low_confidence or low_confidence,
         )
         warn = recognize.out_of_bounds_merge_warning(ranges, header_row, height)
         if warn:
             st.warnings.append(warn)
+        st.warnings.extend(extra_warnings)
         if det.header_row == 0:
             st.warnings.append("未探测到表头，已按第 1 行处理（可手动指定）")
         if not confident:
@@ -413,6 +531,57 @@ class _XlsReader:
             return bool(cell.value)
         return None
 
+    def _style_facts(self, sheet_name, rows, quick_only=False):
+        """窗口行的样式事实: 冻结窗格/自动筛选/加粗行/填充行(占比>60%非空格)。
+        quick_only=True 只取 O(1) 的冻结/筛选 —— 逐格的加粗/填充扫描较贵,
+        仅在需要 v2 全局裁决(低置信)时才做。"""
+        from .recognize2 import StyleFacts
+        try:
+            ws = self.wb[sheet_name]
+            freeze_row = 0
+            fp = getattr(ws, "freeze_panes", None)
+            if fp and isinstance(fp, str):
+                m = re.match(r"([A-Z]+)(\d+)", fp)
+                if m:
+                    freeze_row = int(m.group(2))
+            filter_row = 0
+            af = getattr(ws.auto_filter, "ref", None) if getattr(ws, "auto_filter", None) else None
+            if af and ":" in str(af):
+                m = re.match(r"([A-Z]+)(\d+)", str(af).split(":")[0])
+                if m:
+                    filter_row = int(m.group(2))
+            if quick_only:
+                return StyleFacts(freeze_row=freeze_row, filter_row=filter_row)
+            bold_rows, filled_rows = [], []
+            limit_col = 60
+            for r in range(1, min(rows, XLSX_WINDOW + 8) + 1):
+                bold = filled = total = 0
+                for c in range(1, limit_col + 1):
+                    cell = ws.cell(r, c)
+                    if cell.value in (None, ""):
+                        continue
+                    total += 1
+                    try:
+                        if cell.font and cell.font.bold:
+                            bold += 1
+                    except Exception:
+                        pass
+                    try:
+                        if cell.fill and cell.fill.fill_type == "solid":
+                            fg = cell.fill.fgColor
+                            if fg and fg.rgb not in (None, "00000000", "FFFFFFFF"):
+                                filled += 1
+                    except Exception:
+                        pass
+                if total >= 2 and bold / total > 0.6:
+                    bold_rows.append(r)
+                if total >= 2 and filled / total > 0.6:
+                    filled_rows.append(r)
+            return StyleFacts(freeze_row=freeze_row, filter_row=filter_row,
+                              bold_rows=tuple(bold_rows), filled_rows=tuple(filled_rows))
+        except Exception:
+            return StyleFacts()
+
     def build_structure(self, sheet_name, force=0, override=None):
         sheet = self.book.sheet_by_name(sheet_name)
         if sheet.nrows == 0:
@@ -497,6 +666,57 @@ class _CsvReader:
 
     def _reopen(self):
         return csv.reader(self.path.open("r", encoding=self.encoding, newline=""))
+
+    def _style_facts(self, sheet_name, rows, quick_only=False):
+        """窗口行的样式事实: 冻结窗格/自动筛选/加粗行/填充行(占比>60%非空格)。
+        quick_only=True 只取 O(1) 的冻结/筛选 —— 逐格的加粗/填充扫描较贵,
+        仅在需要 v2 全局裁决(低置信)时才做。"""
+        from .recognize2 import StyleFacts
+        try:
+            ws = self.wb[sheet_name]
+            freeze_row = 0
+            fp = getattr(ws, "freeze_panes", None)
+            if fp and isinstance(fp, str):
+                m = re.match(r"([A-Z]+)(\d+)", fp)
+                if m:
+                    freeze_row = int(m.group(2))
+            filter_row = 0
+            af = getattr(ws.auto_filter, "ref", None) if getattr(ws, "auto_filter", None) else None
+            if af and ":" in str(af):
+                m = re.match(r"([A-Z]+)(\d+)", str(af).split(":")[0])
+                if m:
+                    filter_row = int(m.group(2))
+            if quick_only:
+                return StyleFacts(freeze_row=freeze_row, filter_row=filter_row)
+            bold_rows, filled_rows = [], []
+            limit_col = 60
+            for r in range(1, min(rows, XLSX_WINDOW + 8) + 1):
+                bold = filled = total = 0
+                for c in range(1, limit_col + 1):
+                    cell = ws.cell(r, c)
+                    if cell.value in (None, ""):
+                        continue
+                    total += 1
+                    try:
+                        if cell.font and cell.font.bold:
+                            bold += 1
+                    except Exception:
+                        pass
+                    try:
+                        if cell.fill and cell.fill.fill_type == "solid":
+                            fg = cell.fill.fgColor
+                            if fg and fg.rgb not in (None, "00000000", "FFFFFFFF"):
+                                filled += 1
+                    except Exception:
+                        pass
+                if total >= 2 and bold / total > 0.6:
+                    bold_rows.append(r)
+                if total >= 2 and filled / total > 0.6:
+                    filled_rows.append(r)
+            return StyleFacts(freeze_row=freeze_row, filter_row=filter_row,
+                              bold_rows=tuple(bold_rows), filled_rows=tuple(filled_rows))
+        except Exception:
+            return StyleFacts()
 
     def build_structure(self, sheet_name, force=0, override=None):
         window = [r for r in self.window]  # 前导空行参与窗口但计分为 0
